@@ -13,8 +13,10 @@ Active development in this repo. Track work via [GitHub Issues](https://github.c
 | [#1](https://github.com/Jordan1881/Finlens/issues/1) | PRD |
 | [#2](https://github.com/Jordan1881/Finlens/issues/2) | **Start here** — AWS bootstrap (HITL) |
 | [#3](https://github.com/Jordan1881/Finlens/issues/3) | Bedrock + region (HITL) |
-| [#4](https://github.com/Jordan1881/Finlens/issues/4) | Monorepo + CDK (in progress) |
-| [#5](https://github.com/Jordan1881/Finlens/issues/5) | Web UI — SnowUI Figma (HITL) |
+| [#6](https://github.com/Jordan1881/Finlens/issues/6) | MCP v1 epic (grill decisions) |
+| [#7–#11](https://github.com/Jordan1881/Finlens/issues/7) | MCP REST + `/mcp` (implemented locally — deploy) |
+| [#12](https://github.com/Jordan1881/Finlens/issues/12) | **[HITL] Cognito OAuth** — you'll do this next |
+| [#13](https://github.com/Jordan1881/Finlens/issues/13) | OAuth on `/mcp` (after #12) |
 
 ## Architecture (v1)
 
@@ -51,4 +53,34 @@ infra/             AWS CDK
 
 ## Development
 
-Start with [HITL issue #8 — AWS bootstrap](https://github.com/Jordan1881/Finance-MCP-Agent-UI/issues/8).
+## Development
+
+AWS bootstrap: [issue #2](https://github.com/Jordan1881/Finlens/issues/2). Deploy dev stack:
+
+```bash
+cd "/Users/jordan/Desktop/AI Project/Finlens"
+npm install
+cd infra
+npx cdk deploy FinlensDevStack --profile finlens
+```
+
+### Test upload API (after deploy)
+
+Dev API key (from stack output `DevApiKey`): `finlens-dev-local-key`
+
+```bash
+# Create upload slot
+curl -s -X POST "$API_URL/v1/statements" \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: finlens-dev-local-key" \
+  -d '{}' | jq
+
+# Upload PDF to presigned URL from response.uploadUrl
+curl -X PUT "$UPLOAD_URL" \
+  -H "Content-Type: application/pdf" \
+  --data-binary @statement.pdf
+
+# Poll status
+curl -s "$API_URL/v1/statements/$STATEMENT_ID" \
+  -H "X-Api-Key: finlens-dev-local-key" | jq
+```
