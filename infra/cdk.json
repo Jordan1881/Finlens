@@ -1,0 +1,12 @@
+{
+  "app": "npx ts-node --prefer-ts-exts bin/finlens.ts",
+  "watch": {
+    "include": ["**"],
+    "exclude": ["README.md", "cdk*.json", "**/*.d.ts", "**/*.js", "tsconfig.json", "node_modules", "dist"]
+  },
+  "context": {
+    "@aws-cdk/core:checkSecretUsage": true,
+    "region": "eu-west-1",
+    "bedrockModelId": "anthropic.claude-3-5-sonnet-20241022-v2:0"
+  }
+}

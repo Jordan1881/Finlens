@@ -6,7 +6,15 @@ Upload a monthly bank PDF → async Bedrock analysis → structured financial su
 
 ## Status
 
-Greenfield monorepo. Planning artifacts live in [Finance-MCP-Agent-UI issues #7–#17](https://github.com/Jordan1881/Finance-MCP-Agent-UI/issues/7) until migrated here.
+Active development in this repo. Track work via [GitHub Issues](https://github.com/Jordan1881/Finlens/issues).
+
+| Issue | Track |
+|-------|--------|
+| [#1](https://github.com/Jordan1881/Finlens/issues/1) | PRD |
+| [#2](https://github.com/Jordan1881/Finlens/issues/2) | **Start here** — AWS bootstrap (HITL) |
+| [#3](https://github.com/Jordan1881/Finlens/issues/3) | Bedrock + region (HITL) |
+| [#4](https://github.com/Jordan1881/Finlens/issues/4) | Monorepo + CDK (in progress) |
+| [#5](https://github.com/Jordan1881/Finlens/issues/5) | Web UI — SnowUI Figma (HITL) |
 
 ## Architecture (v1)
 

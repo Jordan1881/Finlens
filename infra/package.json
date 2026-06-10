@@ -1,0 +1,21 @@
+{
+  "name": "infra",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "synth": "cdk synth",
+    "deploy:dev": "cdk deploy FinlensDevStack --require-approval never",
+    "deploy:prod": "cdk deploy FinlensProdStack --require-approval never"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.200.0",
+    "constructs": "^10.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "aws-cdk": "^2.200.0",
+    "typescript": "^5.7.0"
+  }
+}

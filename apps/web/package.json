@@ -1,0 +1,9 @@
+{
+  "name": "@finlens/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "echo 'Next.js app — implement in issue #11'",
+    "build": "echo 'Next.js build placeholder'"
+  }
+}

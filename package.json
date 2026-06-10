@@ -1,0 +1,18 @@
+{
+  "name": "finlens",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "infra"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "cdk:synth": "npm run synth -w infra",
+    "cdk:deploy:dev": "npm run deploy:dev -w infra"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
