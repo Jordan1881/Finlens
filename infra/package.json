@@ -6,7 +6,7 @@
     "build": "tsc",
     "watch": "tsc -w",
     "synth": "cdk synth",
-    "deploy:dev": "cdk deploy FinlensDevStack --require-approval never",
+    "deploy:dev": "cd .. && NEXT_PUBLIC_FINLENS_API_URL=https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com NEXT_PUBLIC_FINLENS_API_KEY=finlens-dev-local-key npm run build -w @finlens/web && cd infra && cdk deploy FinlensDevStack --require-approval never",
     "deploy:prod": "cdk deploy FinlensProdStack --require-approval never"
   },
   "dependencies": {
@@ -16,6 +16,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "aws-cdk": "^2.200.0",
+    "esbuild": "^0.25.0",
     "typescript": "^5.7.0"
   }
 }

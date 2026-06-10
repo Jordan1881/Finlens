@@ -6,7 +6,12 @@
   },
   "context": {
     "@aws-cdk/core:checkSecretUsage": true,
+    "account": "575838736040",
     "region": "eu-west-1",
-    "bedrockModelId": "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    "bedrockModelId": "eu.anthropic.claude-sonnet-4-6",
+    "devApiKey": "finlens-dev-local-key",
+    "cognitoUserPoolId": "eu-west-1_8yJv9ul6G",
+    "cognitoClientId": "306iqv4ugg8jn07pc2jvsle1tc",
+    "cognitoDomain": "eu-west-18yjv9ul6g"
   }
 }

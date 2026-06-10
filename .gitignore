@@ -13,6 +13,7 @@ dist/
 build/
 cdk.out/
 .next/
+out/
 public/
 
 # Env & secrets
