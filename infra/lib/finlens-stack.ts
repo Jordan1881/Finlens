@@ -98,6 +98,16 @@ export class FinlensStack extends cdk.Stack {
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
+    const deleteStatementFn = new NodejsFunction(this, "DeleteStatementFn", {
+      entry: path.join(repoRoot, "apps/api/src/handlers/delete-statement.ts"),
+      handler: "handler",
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 256,
+      environment: lambdaEnv,
+      bundling: { minify: true, sourceMap: true, target: "node20" },
+    });
+
     const uploadStatementDirectFn = new NodejsFunction(this, "UploadStatementDirectFn", {
       entry: path.join(repoRoot, "apps/api/src/handlers/upload-statement-direct.ts"),
       handler: "handler",
@@ -209,9 +219,12 @@ export class FinlensStack extends cdk.Stack {
     statementsTable.grantReadWriteData(uploadStatementDirectFn);
     statementsTable.grantReadData(getStatementFn);
     statementsTable.grantReadData(listStatementsFn);
+    statementsTable.grantReadWriteData(deleteStatementFn);
     statementsTable.grantReadWriteData(analyzeStatementFn);
     statementsTable.grantReadWriteData(mcpServerFn);
     statementsBucket.grantPut(mcpServerFn);
+    statementsBucket.grantDelete(deleteStatementFn);
+    statementsBucket.grantDelete(mcpServerFn);
 
     analyzeStatementFn.addToRolePolicy(
       new iam.PolicyStatement({
@@ -255,6 +268,11 @@ export class FinlensStack extends cdk.Stack {
       s3.EventType.OBJECT_CREATED,
       new s3n.LambdaDestination(onS3UploadFn),
       { prefix: "statements/", suffix: ".pdf" },
+    );
+    statementsBucket.addEventNotification(
+      s3.EventType.OBJECT_CREATED,
+      new s3n.LambdaDestination(onS3UploadFn),
+      { prefix: "statements/", suffix: ".csv" },
     );
 
     const httpApi = new apigwv2.HttpApi(this, "HttpApi", {
@@ -301,6 +319,15 @@ export class FinlensStack extends cdk.Stack {
       path: "/v1/statements/{statementId}",
       methods: [apigwv2.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration("GetStatementIntegration", getStatementFn),
+    });
+
+    httpApi.addRoutes({
+      path: "/v1/statements/{statementId}",
+      methods: [apigwv2.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration(
+        "DeleteStatementIntegration",
+        deleteStatementFn,
+      ),
     });
 
     httpApi.addRoutes({

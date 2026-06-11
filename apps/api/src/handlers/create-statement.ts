@@ -12,6 +12,7 @@ const s3 = new S3Client({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const UPLOAD_EXPIRY_SECONDS = 900;
+const ALLOWED_TYPES = new Set(["application/pdf", "text/csv"]);
 
 export async function handler(
   event: APIGatewayProxyEventV2,
@@ -31,30 +32,37 @@ export async function handler(
   if (event.body) {
     try {
       const body = JSON.parse(event.body) as { contentType?: string };
-      if (body.contentType && !body.contentType.startsWith("application/pdf")) {
-        return badRequest(
-          "INVALID_PDF",
-          "Only application/pdf uploads are supported",
-          "Set contentType to application/pdf",
-        );
-      }
       if (body.contentType) {
+        if (!ALLOWED_TYPES.has(body.contentType)) {
+          return badRequest(
+            "UNSUPPORTED_FILE_TYPE",
+            "Only application/pdf and text/csv uploads are supported",
+            "Set contentType to application/pdf or text/csv",
+          );
+        }
         contentType = body.contentType;
       }
     } catch {
-      return badRequest("INVALID_REQUEST", "Invalid JSON body", "Send {} or { \"contentType\": \"application/pdf\" }");
+      return badRequest(
+        "INVALID_REQUEST",
+        "Invalid JSON body",
+        'Send {} or { "contentType": "application/pdf" } or text/csv',
+      );
     }
   }
 
+  const isCsv = contentType === "text/csv";
   const statementId = randomUUID();
   const now = new Date().toISOString();
-  const s3Key = `statements/${tenantId}/${statementId}.pdf`;
+  const ext = isCsv ? "csv" : "pdf";
+  const s3Key = `statements/${tenantId}/${statementId}.${ext}`;
 
   const record: StatementRecord = {
     tenantId,
     statementId,
     status: "pending_upload",
     s3Key,
+    sourceFormat: isCsv ? "csv" : "pdf",
     createdAt: now,
     updatedAt: now,
   };

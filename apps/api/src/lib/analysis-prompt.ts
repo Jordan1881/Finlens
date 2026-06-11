@@ -1,9 +1,9 @@
 export const ANALYSIS_SYSTEM_PROMPT = `You are Finlens, a bank statement analysis assistant.
-Read the uploaded PDF bank statement and extract structured financial data.
+Read the uploaded bank statement (PDF or CSV) and extract structured financial data.
 The statement may be in Hebrew or English.
 Respond with JSON only — no markdown, no explanation outside the JSON object.`;
 
-export const ANALYSIS_USER_PROMPT = `Analyze this bank statement PDF and return a JSON object with exactly these fields:
+export const ANALYSIS_USER_PROMPT = `Analyze this bank statement and return a JSON object with exactly these fields:
 {
   "currency": "ISO 4217 code (e.g. ILS, USD)",
   "month": "YYYY-MM or null if unclear",
@@ -19,6 +19,8 @@ Rules:
 - topCategories: up to 5 spending categories with amounts.
 - spendingInsights: 3-5 short narrative bullets about spending patterns (same language as the statement when possible).
 - Use 0 for unknown numeric fields; use null only for month when truly unknown.`;
+
+export const ANALYSIS_CSV_PREFIX = `The following CSV is a bank statement export. Parse rows and infer totals:\n\n`;
 
 export interface AnalysisResult {
   currency: string;

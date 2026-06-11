@@ -2,8 +2,8 @@ import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { FinancialSummary } from "@finlens/domain";
-import { analyzeStatementPdf } from "../lib/bedrock-analyze";
-import { validatePdfForBedrock } from "../lib/pdf-validation";
+import { analyzeStatementFile } from "../lib/bedrock-analyze";
+import { validateForBedrock, type StatementFileType } from "../lib/file-validation";
 
 const s3 = new S3Client({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -13,6 +13,10 @@ export interface AnalyzeInput {
   statementId: string;
   bucket: string;
   key: string;
+}
+
+function fileTypeFromKey(key: string): StatementFileType {
+  return key.toLowerCase().endsWith(".csv") ? "csv" : "pdf";
 }
 
 async function markFailed(tenantId: string, statementId: string, message: string) {
@@ -43,6 +47,7 @@ export async function handler(input: AnalyzeInput): Promise<{ ok: boolean }> {
   }
 
   const { tenantId, statementId, bucket, key } = input;
+  const fileType = fileTypeFromKey(key);
 
   try {
     const object = await s3.send(
@@ -54,15 +59,15 @@ export async function handler(input: AnalyzeInput): Promise<{ ok: boolean }> {
 
     const body = await object.Body?.transformToByteArray();
     if (!body) {
-      throw new Error("Empty PDF object in S3");
+      throw new Error("Empty statement file in S3");
     }
 
-    const bedrockSizeError = validatePdfForBedrock(body);
+    const bedrockSizeError = validateForBedrock(body);
     if (bedrockSizeError) {
       throw new Error(bedrockSizeError.message);
     }
 
-    const analysis = await analyzeStatementPdf(body);
+    const analysis = await analyzeStatementFile(body, fileType);
 
     const financialSummary: FinancialSummary = {
       currency: analysis.currency,

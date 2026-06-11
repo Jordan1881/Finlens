@@ -4,7 +4,7 @@ import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda
 import { z } from "zod";
 import { FINLENS_MCP_INSTRUCTIONS } from "@finlens/mcp";
 import { mcpUnauthorized, resolveTenantIdForMcp } from "../lib/auth";
-import { getStatement, listStatements, uploadStatement } from "../lib/statement-service";
+import { getStatement, deleteStatement, listStatements, uploadStatement } from "../lib/statement-service";
 
 function toRequest(event: APIGatewayProxyEventV2): {
   request: Request;
@@ -88,10 +88,13 @@ function createMcpServer(tenantId: string): McpServer {
     "upload_statement",
     {
       description:
-        "Upload a bank statement PDF for analysis. Use base64+filename (read local PDFs yourself). Returns statementId for polling.",
+        "Upload a bank statement PDF or CSV for analysis. Use base64+filename (read local files yourself). Returns statementId for polling.",
       inputSchema: {
-        base64: z.string().optional().describe("Base64-encoded PDF bytes"),
-        filename: z.string().optional().describe("Original filename, must end with .pdf"),
+        base64: z.string().optional().describe("Base64-encoded PDF or CSV bytes"),
+        filename: z
+          .string()
+          .optional()
+          .describe("Original filename, must end with .pdf or .csv"),
         file_path: z
           .string()
           .optional()
@@ -104,7 +107,7 @@ function createMcpServer(tenantId: string): McpServer {
           "FILE_PATH_NOT_SUPPORTED",
           "Remote Finlens cannot read local file paths",
           false,
-          "Read the PDF locally and pass it as base64 with filename",
+          "Read the file locally and pass it as base64 with filename",
         );
       }
 
@@ -113,32 +116,36 @@ function createMcpServer(tenantId: string): McpServer {
           "INVALID_REQUEST",
           "base64 is required",
           false,
-          "Read the PDF and provide base64 and filename",
+          "Read the PDF or CSV and provide base64 and filename",
         );
       }
 
-      if (filename && !filename.toLowerCase().endsWith(".pdf")) {
+      if (
+        filename &&
+        !filename.toLowerCase().endsWith(".pdf") &&
+        !filename.toLowerCase().endsWith(".csv")
+      ) {
         return toolError(
-          "INVALID_PDF",
-          "Filename must end with .pdf",
+          "UNSUPPORTED_FILE_TYPE",
+          "Filename must end with .pdf or .csv",
           false,
-          "Use a .pdf filename",
+          "Use a .pdf or .csv filename",
         );
       }
 
-      let pdfBytes: Uint8Array;
+      let fileBytes: Uint8Array;
       try {
-        pdfBytes = Uint8Array.from(Buffer.from(base64, "base64"));
+        fileBytes = Uint8Array.from(Buffer.from(base64, "base64"));
       } catch {
         return toolError(
           "INVALID_REQUEST",
           "Invalid base64 encoding",
           false,
-          "Provide valid base64-encoded PDF bytes",
+          "Provide valid base64-encoded file bytes",
         );
       }
 
-      const result = await uploadStatement(tenantId, pdfBytes);
+      const result = await uploadStatement(tenantId, fileBytes, filename);
       if ("code" in result) {
         return toolError(result.code, result.message, result.retryable, result.nextStep);
       }
@@ -202,6 +209,31 @@ function createMcpServer(tenantId: string): McpServer {
       const data = await listStatements(tenantId);
       return {
         content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "delete_statement",
+    {
+      description: "Permanently delete a statement and its uploaded file.",
+      inputSchema: {
+        statementId: z.string().describe("Statement ID to delete"),
+      },
+    },
+    async ({ statementId }) => {
+      const result = await deleteStatement(tenantId, statementId);
+      if (!result) {
+        return toolError(
+          "NOT_FOUND",
+          "Statement not found",
+          false,
+          "Check statementId or list_statements",
+        );
+      }
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
     },
   );

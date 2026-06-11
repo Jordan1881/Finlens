@@ -19,6 +19,7 @@ export interface StatementRecord {
   statementId: string;
   status: StatementStatus;
   s3Key: string;
+  sourceFormat?: "pdf" | "csv";
   createdAt: string;
   updatedAt: string;
   errorMessage?: string;
@@ -70,11 +71,17 @@ export interface StatementListItem {
   createdAt: string;
   updatedAt: string;
   month: string | null;
+  sourceFormat?: "pdf" | "csv";
 }
 
 export interface ListStatementsResponse {
   statements: StatementListItem[];
   count: number;
+}
+
+export interface DeleteStatementResponse {
+  statementId: string;
+  deleted: true;
 }
 
 export interface StructuredError {

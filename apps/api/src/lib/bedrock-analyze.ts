@@ -4,30 +4,22 @@ import {
   type ContentBlock,
 } from "@aws-sdk/client-bedrock-runtime";
 import {
+  ANALYSIS_CSV_PREFIX,
   ANALYSIS_SYSTEM_PROMPT,
   ANALYSIS_USER_PROMPT,
   parseAnalysisJson,
   type AnalysisResult,
 } from "./analysis-prompt";
+import { MAX_CSV_TEXT_CHARS } from "./file-validation";
+import type { StatementFileType } from "./file-validation";
 
 const bedrock = new BedrockRuntimeClient({});
 
-export async function analyzeStatementPdf(pdfBytes: Uint8Array): Promise<AnalysisResult> {
+async function converse(content: ContentBlock[]): Promise<AnalysisResult> {
   const modelId = process.env.BEDROCK_MODEL_ID;
   if (!modelId) {
     throw new Error("BEDROCK_MODEL_ID is not configured");
   }
-
-  const content: ContentBlock[] = [
-    {
-      document: {
-        format: "pdf",
-        name: "bank-statement",
-        source: { bytes: pdfBytes },
-      },
-    },
-    { text: ANALYSIS_USER_PROMPT },
-  ];
 
   const response = await bedrock.send(
     new ConverseCommand({
@@ -47,4 +39,35 @@ export async function analyzeStatementPdf(pdfBytes: Uint8Array): Promise<Analysi
   }
 
   return parseAnalysisJson(textBlock.text);
+}
+
+export async function analyzeStatementPdf(pdfBytes: Uint8Array): Promise<AnalysisResult> {
+  return converse([
+    {
+      document: {
+        format: "pdf",
+        name: "bank-statement",
+        source: { bytes: pdfBytes },
+      },
+    },
+    { text: ANALYSIS_USER_PROMPT },
+  ]);
+}
+
+export async function analyzeStatementCsv(csvBytes: Uint8Array): Promise<AnalysisResult> {
+  let text = new TextDecoder("utf-8", { fatal: false }).decode(csvBytes);
+  if (text.length > MAX_CSV_TEXT_CHARS) {
+    text = `${text.slice(0, MAX_CSV_TEXT_CHARS)}\n...[truncated]`;
+  }
+
+  return converse([
+    { text: `${ANALYSIS_CSV_PREFIX}${text}\n\n${ANALYSIS_USER_PROMPT}` },
+  ]);
+}
+
+export async function analyzeStatementFile(
+  bytes: Uint8Array,
+  fileType: StatementFileType,
+): Promise<AnalysisResult> {
+  return fileType === "csv" ? analyzeStatementCsv(bytes) : analyzeStatementPdf(bytes);
 }
