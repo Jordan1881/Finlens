@@ -1,86 +1,241 @@
 # Finlens
 
-Remote MCP product for bank statement PDF analysis on AWS.
+Finlens is a remote MCP product for bank statement analysis on AWS. Upload a monthly bank **PDF or CSV** (Hebrew or English), run async Bedrock analysis, and get structured financial summaries plus narrative spending insights — via **REST**, **remote MCP**, or the **web dashboard**.
 
-Upload a monthly bank PDF → async Bedrock analysis → structured financial summary + narrative spending insights. Exposed via **remote MCP** and a **Next.js web UI**.
+## Live (dev)
 
-## Status
+| Surface | URL |
+|---------|-----|
+| Web UI | https://d1l5l6otiduz0x.cloudfront.net |
+| REST / MCP API | https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com |
+| MCP endpoint | https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com/mcp |
 
-Active development in this repo. Track work via [GitHub Issues](https://github.com/Jordan1881/Finlens/issues).
+Dev auth uses header `X-Api-Key: finlens-dev-local-key` (stack output `DevApiKey`). Cognito OAuth is wired for MCP but API key is the reliable path in Cursor today.
 
-| Issue | Track |
-|-------|--------|
-| [#1](https://github.com/Jordan1881/Finlens/issues/1) | PRD |
-| [#2](https://github.com/Jordan1881/Finlens/issues/2) | **Start here** — AWS bootstrap (HITL) |
-| [#3](https://github.com/Jordan1881/Finlens/issues/3) | Bedrock + region (HITL) |
-| [#6](https://github.com/Jordan1881/Finlens/issues/6) | MCP v1 epic (grill decisions) |
-| [#7–#11](https://github.com/Jordan1881/Finlens/issues/7) | MCP REST + `/mcp` (implemented locally — deploy) |
-| [#12](https://github.com/Jordan1881/Finlens/issues/12) | **[HITL] Cognito OAuth** — you'll do this next |
-| [#13](https://github.com/Jordan1881/Finlens/issues/13) | OAuth on `/mcp` (after #12) |
+## Features
 
-## Architecture (v1)
+- Upload bank statements as **PDF** or **CSV**
+- Async pipeline: S3 → Step Functions → Lambda → **Amazon Bedrock** (Claude)
+- REST API for create, list, get, upload, and **delete**
+- Remote **MCP** (Streamable HTTP) with four tools
+- Next.js dashboard (SnowUI-inspired layout)
+- Multi-tenant metadata in DynamoDB (`tenantId` from API key or Cognito JWT)
 
-- **MCP**: Remote HTTP on AWS (Streamable HTTP)
-- **Auth**: API keys (v1) → Cognito (v2)
-- **Storage**: S3 (PDFs) + DynamoDB (metadata & analysis)
-- **Compute**: Lambda + Step Functions + Bedrock Claude
-- **UI**: Next.js on AWS Amplify
-- **IaC**: AWS CDK (TypeScript)
-- **Environments**: dev + prod
-- **Region**: `eu-west-1` v1 (Amplify not yet in `il-central-1`)
+## Architecture
 
-## Design
+```mermaid
+flowchart TB
+  subgraph clients["Clients"]
+    WEB["Web UI<br/>(Next.js static)"]
+    MCP["Cursor / MCP clients"]
+    CLI["curl / integrations"]
+  end
+
+  subgraph edge["Edge & API"]
+    CF["CloudFront"]
+    WEBS3["S3 — web assets"]
+    APIGW["API Gateway<br/>HTTP API"]
+  end
+
+  subgraph api["Lambda handlers"]
+    REST["REST handlers<br/>CRUD + upload"]
+    MCPL["MCP server"]
+    OAUTH["OAuth proxy + metadata"]
+  end
+
+  subgraph data["Data"]
+    STMTS3["S3 — statements<br/>.pdf / .csv"]
+    DDB["DynamoDB<br/>statements + api keys"]
+  end
+
+  subgraph async["Async analysis"]
+    S3EVT["S3 event"]
+    ONUP["OnS3Upload λ"]
+    SFN["Step Functions"]
+    ANALYZE["AnalyzeStatement λ"]
+    BR["Amazon Bedrock<br/>Claude Sonnet"]
+  end
+
+  subgraph auth["Auth (optional)"]
+    COG["Amazon Cognito"]
+  end
+
+  WEB --> CF --> WEBS3
+  WEB --> APIGW
+  MCP --> APIGW
+  CLI --> APIGW
+
+  APIGW --> REST
+  APIGW --> MCPL
+  APIGW --> OAUTH
+  OAUTH --> COG
+
+  REST --> STMTS3
+  REST --> DDB
+  MCPL --> STMTS3
+  MCPL --> DDB
+
+  STMTS3 --> S3EVT --> ONUP --> SFN --> ANALYZE
+  ANALYZE --> STMTS3
+  ANALYZE --> DDB
+  ANALYZE --> BR
+  ONUP --> DDB
+```
+
+### AWS services
+
+<p align="center">
+  <img src="docs/assets/aws/CloudFront.png" alt="Amazon CloudFront" width="48" />
+  &nbsp;
+  <img src="docs/assets/aws/S3.png" alt="Amazon S3" width="48" />
+  &nbsp;
+  <img src="docs/assets/aws/APIGateway.png" alt="Amazon API Gateway" width="48" />
+  &nbsp;
+  <img src="docs/assets/aws/Lambda.png" alt="AWS Lambda" width="48" />
+  &nbsp;
+  <img src="docs/assets/aws/DynamoDB.png" alt="Amazon DynamoDB" width="48" />
+  &nbsp;
+  <img src="docs/assets/aws/StepFunctions.png" alt="AWS Step Functions" width="48" />
+  &nbsp;
+  <img src="docs/assets/aws/Bedrock.png" alt="Amazon Bedrock" width="48" />
+  &nbsp;
+  <img src="docs/assets/aws/Cognito.png" alt="Amazon Cognito" width="48" />
+</p>
+
+Icons from [awslabs/aws-icons-for-plantuml](https://github.com/awslabs/aws-icons-for-plantuml) (Apache-2.0).
+
+| Service | Role in Finlens |
+|---------|-----------------|
+| **Amazon CloudFront** | CDN for the static Next.js dashboard |
+| **Amazon S3** | Private buckets for statement files (`.pdf`, `.csv`) and exported web assets |
+| **Amazon API Gateway (HTTP API)** | Single HTTPS entry for REST, MCP, and OAuth routes |
+| **AWS Lambda** | REST handlers, MCP server, OAuth bridge, S3 trigger, Bedrock analysis |
+| **Amazon DynamoDB** | Statement records (status, summaries, insights) and API key hashes |
+| **AWS Step Functions** | Durable wrapper around the analyze Lambda |
+| **Amazon Bedrock** | Claude model for PDF document + CSV text analysis |
+| **Amazon Cognito** | User pool + Google IdP for MCP OAuth (alongside dev API key) |
+
+**Region:** `eu-west-1` · **IaC:** AWS CDK (TypeScript) · **Account:** see `infra/cdk.json`
+
+### Upload → analysis flow
+
+1. Client uploads via `POST /v1/statements/upload` (base64) or presigned `POST /v1/statements`.
+2. File lands in S3 under `statements/{tenantId}/{statementId}.{pdf|csv}`.
+3. S3 `OBJECT_CREATED` invokes **OnS3Upload** Lambda → marks row `processing` → starts Step Functions.
+4. **AnalyzeStatement** Lambda reads the file, calls Bedrock, writes `financialSummary` + `spendingInsights`, sets status `ready` (or `failed`).
+5. Client polls `GET /v1/statements/{id}?detail=summary` or uses MCP `get_statement`.
+
+## Monorepo layout
+
+```
+apps/
+  api/           Lambda handlers (REST, MCP, OAuth, pipeline)
+  web/           Next.js static dashboard (CloudFront)
+packages/
+  domain/        Shared TypeScript types
+  mcp/           MCP tool names + agent instructions
+infra/           AWS CDK stack (`FinlensDevStack` / `FinlensProdStack`)
+```
+
+## REST API (v1)
+
+All routes require `X-Api-Key` in dev (or `Authorization: Bearer` Cognito JWT on MCP).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/statements` | Create statement + presigned upload URL |
+| `POST` | `/v1/statements/upload` | Direct upload (JSON `{ base64, filename }`) |
+| `GET` | `/v1/statements` | List recent statements |
+| `GET` | `/v1/statements/{id}?detail=summary\|full` | Get status / analysis |
+| `DELETE` | `/v1/statements/{id}` | Delete statement + S3 object |
+
+### Example
+
+```bash
+export API_URL=https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com
+export API_KEY=finlens-dev-local-key
+
+# List
+curl -s "$API_URL/v1/statements" -H "X-Api-Key: $API_KEY" | jq
+
+# Upload PDF or CSV (base64)
+curl -s -X POST "$API_URL/v1/statements/upload" \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: $API_KEY" \
+  -d '{"base64":"...","filename":"statement.csv"}' | jq
+
+# Poll summary
+curl -s "$API_URL/v1/statements/$STATEMENT_ID?detail=summary" \
+  -H "X-Api-Key: $API_KEY" | jq
+
+# Delete
+curl -s -X DELETE "$API_URL/v1/statements/$STATEMENT_ID" \
+  -H "X-Api-Key: $API_KEY" | jq
+```
+
+## MCP tools
+
+| Tool | Description |
+|------|-------------|
+| `upload_statement` | Upload PDF/CSV as base64 + filename |
+| `get_statement` | Poll status and summary (`detail=summary\|full`) |
+| `list_statements` | List up to 20 recent uploads |
+| `delete_statement` | Permanently delete a statement |
+
+### Cursor config (dev)
+
+```json
+{
+  "mcpServers": {
+    "finlens": {
+      "url": "https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com/mcp",
+      "headers": {
+        "X-Api-Key": "finlens-dev-local-key"
+      }
+    }
+  }
+}
+```
+
+## Design references
 
 - [SnowUI Design System](https://www.figma.com/design/PIcIocu0vcBS8biHwWyc2b/SnowUI-Design-System--Community-?node-id=60755-3905)
 - [Dashboard layout reference](https://www.figma.com/design/ik7CMptQeecUUQZxc0EEhh/Dashboard-Design-System--Community-?node-id=913-3655)
 
-## Monorepo layout (planned)
-
-```
-apps/web/          Next.js (Amplify)
-apps/api/          API Gateway + Lambda (REST + MCP)
-packages/domain/   PDF pipeline, analysis schema
-packages/mcp/      MCP tool definitions
-infra/             AWS CDK
-```
-
-## MCP tools (v1)
-
-- `upload_statement`
-- `get_statement_status`
-- `get_financial_summary`
-- `get_spending_insights`
-
 ## Development
 
-## Development
-
-AWS bootstrap: [issue #2](https://github.com/Jordan1881/Finlens/issues/2). Deploy dev stack:
+**Requirements:** Node.js ≥ 20, AWS CLI, CDK bootstrap in `eu-west-1`.
 
 ```bash
-cd "/Users/jordan/Desktop/AI Project/Finlens"
+git clone https://github.com/Jordan1881/Finlens.git
+cd Finlens
 npm install
+
+# Build web + deploy dev stack (from infra/)
 cd infra
-npx cdk deploy FinlensDevStack --profile finlens
+npm run deploy:dev
+# or: npx cdk deploy FinlensDevStack --profile finlens
 ```
 
-### Test upload API (after deploy)
-
-Dev API key (from stack output `DevApiKey`): `finlens-dev-local-key`
+Web build env (injected by `deploy:dev`):
 
 ```bash
-# Create upload slot
-curl -s -X POST "$API_URL/v1/statements" \
-  -H "Content-Type: application/json" \
-  -H "X-Api-Key: finlens-dev-local-key" \
-  -d '{}' | jq
-
-# Upload PDF to presigned URL from response.uploadUrl
-curl -X PUT "$UPLOAD_URL" \
-  -H "Content-Type: application/pdf" \
-  --data-binary @statement.pdf
-
-# Poll status
-curl -s "$API_URL/v1/statements/$STATEMENT_ID" \
-  -H "X-Api-Key: finlens-dev-local-key" | jq
+NEXT_PUBLIC_FINLENS_API_URL=https://<api-id>.execute-api.eu-west-1.amazonaws.com
+NEXT_PUBLIC_FINLENS_API_KEY=finlens-dev-local-key
 ```
+
+Copy `apps/web/.env.production.example` for local static builds.
+
+### Useful scripts
+
+| Command | Description |
+|---------|-------------|
+| `npm run build` | Build all workspaces |
+| `npm run cdk:synth` | Synthesize CloudFormation |
+| `npm run cdk:deploy:dev` | Build web + deploy `FinlensDevStack` |
+
+Stack outputs include `ApiUrl`, `WebUrl`, `McpUrl`, `StatementsBucketName`, `StatementsTableName`, and `DevApiKey`.
+
+## License
+
+Private / all rights reserved unless otherwise noted in the repository.

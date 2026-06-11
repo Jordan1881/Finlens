@@ -6,7 +6,7 @@ import type { S3Event, S3Handler } from "aws-lambda";
 const sfn = new SFNClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
-const KEY_PATTERN = /^statements\/([^/]+)\/([^/]+)\.pdf$/;
+const KEY_PATTERN = /^statements\/([^/]+)\/([^/]+)\.(pdf|csv)$/;
 
 export const handler: S3Handler = async (event: S3Event) => {
   const stateMachineArn = process.env.STATE_MACHINE_ARN;

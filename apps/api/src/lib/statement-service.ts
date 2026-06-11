@@ -1,5 +1,6 @@
+import { DeleteObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type {
   DirectUploadResponse,
   ListStatementsResponse,
@@ -8,11 +9,16 @@ import type {
   StatementStatusResponse,
   StatementSummaryView,
 } from "@finlens/domain";
-import { createStatementAndUploadPdf } from "./statements";
-import { validatePdfBytes } from "./pdf-validation";
 import type { StructuredError } from "@finlens/domain";
+import {
+  detectFileType,
+  validateStatementBytes,
+  type StatementFileType,
+} from "./file-validation";
+import { createStatementAndUploadFile } from "./statements";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const s3 = new S3Client({});
 
 const LIST_LIMIT = 20;
 
@@ -45,7 +51,7 @@ function toSummaryView(record: StatementRecord): StatementSummaryView {
       code: "ANALYSIS_FAILED",
       message: record.errorMessage,
       retryable: true,
-      nextStep: "Call upload_statement again with the PDF",
+      nextStep: "Call upload_statement again with the PDF or CSV",
     };
   }
 
@@ -102,6 +108,7 @@ export async function listStatements(tenantId: string): Promise<ListStatementsRe
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
       month: record.financialSummary?.month ?? null,
+      sourceFormat: record.sourceFormat,
     }),
   );
 
@@ -140,9 +147,20 @@ export async function getStatement(
 
 export async function uploadStatement(
   tenantId: string,
-  pdfBytes: Uint8Array,
+  fileBytes: Uint8Array,
+  filename?: string,
 ): Promise<DirectUploadResponse | StructuredError> {
-  const validationError = validatePdfBytes(pdfBytes);
+  const fileType: StatementFileType | null = detectFileType(filename, fileBytes);
+  if (!fileType) {
+    return {
+      code: "UNSUPPORTED_FILE_TYPE",
+      message: "Only PDF and CSV bank statements are supported",
+      retryable: false,
+      nextStep: "Upload a .pdf or .csv file exported from your bank",
+    };
+  }
+
+  const validationError = validateStatementBytes(fileBytes, fileType);
   if (validationError) {
     return {
       code: validationError.code,
@@ -152,9 +170,10 @@ export async function uploadStatement(
     };
   }
 
-  const { statementId, s3Key } = await createStatementAndUploadPdf({
+  const { statementId, s3Key } = await createStatementAndUploadFile({
     tenantId,
-    pdfBytes,
+    fileBytes,
+    fileType,
     bucket: bucketName(),
     tableName: tableName(),
   });
@@ -164,4 +183,32 @@ export async function uploadStatement(
     s3Key,
     status: "pending_upload",
   };
+}
+
+export async function deleteStatement(
+  tenantId: string,
+  statementId: string,
+): Promise<{ statementId: string; deleted: true } | null> {
+  const record = await fetchStatementRecord(tenantId, statementId);
+  if (!record) {
+    return null;
+  }
+
+  if (record.s3Key) {
+    await s3.send(
+      new DeleteObjectCommand({
+        Bucket: bucketName(),
+        Key: record.s3Key,
+      }),
+    );
+  }
+
+  await ddb.send(
+    new DeleteCommand({
+      TableName: tableName(),
+      Key: { tenantId, statementId },
+    }),
+  );
+
+  return { statementId, deleted: true };
 }
