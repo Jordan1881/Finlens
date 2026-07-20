@@ -246,6 +246,31 @@ NEXT_PUBLIC_COGNITO_REGION=eu-west-1
 
 Copy `apps/web/.env.production.example` for local static builds / `next dev`. Register Cognito callback URLs for `http://localhost:3000/auth/callback` and the CloudFront origin (see `docs/security/phase-workspace-identity.md`).
 
+### Production deploy (`FinlensProdStack`)
+
+Prod is gated: no shared `DEV_API_KEY`, CORS allowlist is the prod CloudFront origin only, and `deploy:prod` refuses to run until security-phase docs (#18–#21, #23, #29) and source invariants pass. Details: [`docs/security/phase-prod-deploy.md`](docs/security/phase-prod-deploy.md).
+
+```bash
+# Prerequisites gate (docs + no DEV_API_KEY / CloudFront CORS invariants)
+npm run cdk:check:prod
+
+# Synth only (safe — no AWS mutation)
+cd infra && npx cdk synth FinlensProdStack
+npm run check:prod -- --verify-synth
+
+# Live deploy — operator approval + working AWS profile required
+# 1. Pass opsAlertEmail and confirm the SNS subscription email
+# 2. After deploy, add Cognito callback/sign-out URLs for the prod WebUrl:
+#      https://<prod-WebUrl>/auth/callback
+#      https://<prod-WebUrl>/
+npx cdk deploy FinlensProdStack \
+  -c opsAlertEmail=ops@example.com \
+  --profile <prod-capable-profile>
+# or (runs the same gate first): npm run cdk:deploy:prod
+```
+
+Prod does **not** emit a `DevApiKey` stack output. Mint Workspace keys via the web control plane or `POST /v1/api-keys` after Cognito login.
+
 ### Useful scripts
 
 | Command | Description |
@@ -253,8 +278,10 @@ Copy `apps/web/.env.production.example` for local static builds / `next dev`. Re
 | `npm run build` | Build all workspaces |
 | `npm run cdk:synth` | Synthesize CloudFormation |
 | `npm run cdk:deploy:dev` | Build web + deploy `FinlensDevStack` |
+| `npm run cdk:check:prod` | Prod deploy prerequisite gate (#29) |
+| `npm run cdk:deploy:prod` | Gate + deploy `FinlensProdStack` |
 
-Stack outputs include `ApiUrl`, `WebUrl`, `McpUrl`, `StatementsBucketName`, `StatementsTableName`, `WorkspacesTableName`, Cognito ids, and `DevApiKey`.
+Stack outputs include `ApiUrl`, `WebUrl`, `McpUrl`, `StatementsBucketName`, `StatementsTableName`, `WorkspacesTableName`, Cognito ids, and (dev only) `DevApiKey`.
 
 ## License
 

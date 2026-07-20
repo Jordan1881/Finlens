@@ -132,7 +132,8 @@ export class FinlensStack extends cdk.Stack {
           }
         : {};
 
-    const lambdaEnv = {
+    // Prod never gets the shared DEV_API_KEY shortcut (#29). Dev may inject it when context provides one.
+    const lambdaEnv: Record<string, string> = {
       STATEMENTS_BUCKET: statementsBucket.bucketName,
       STATEMENTS_TABLE: statementsTable.tableName,
       API_KEYS_TABLE: apiKeysTable.tableName,
@@ -143,6 +144,9 @@ export class FinlensStack extends cdk.Stack {
       ...(stage === "dev" && devApiKey ? { DEV_API_KEY: devApiKey } : {}),
       ...cognitoEnv,
     };
+    if (stage === "prod" && "DEV_API_KEY" in lambdaEnv) {
+      throw new Error("DEV_API_KEY must not be present in prod Lambda environment");
+    }
 
     const createStatementFn = new NodejsFunction(this, "CreateStatementFn", {
       entry: path.join(repoRoot, "apps/api/src/handlers/create-statement.ts"),

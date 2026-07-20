@@ -6,8 +6,9 @@
     "build": "tsc",
     "watch": "tsc -w",
     "synth": "cdk synth",
+    "check:prod": "node scripts/check-prod-prereqs.mjs",
     "deploy:dev": "cd .. && NEXT_PUBLIC_FINLENS_API_URL=https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com NEXT_PUBLIC_COGNITO_USER_POOL_ID=eu-west-1_8yJv9ul6G NEXT_PUBLIC_COGNITO_CLIENT_ID=306iqv4ugg8jn07pc2jvsle1tc NEXT_PUBLIC_COGNITO_DOMAIN=eu-west-18yjv9ul6g NEXT_PUBLIC_COGNITO_REGION=eu-west-1 npm run build -w @finlens/web && cd infra && cdk deploy FinlensDevStack --require-approval never",
-    "deploy:prod": "cdk deploy FinlensProdStack --require-approval never"
+    "deploy:prod": "node scripts/check-prod-prereqs.mjs && cdk deploy FinlensProdStack --require-approval never"
   },
   "dependencies": {
     "aws-cdk-lib": "^2.200.0",
