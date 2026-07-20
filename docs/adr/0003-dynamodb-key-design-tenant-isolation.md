@@ -11,4 +11,5 @@ accepted
 ## Consequences
 
 - Single-Statement reads use `GetItem` on `(tenantId, statementId)`. The `byStatementId` GSI was removed: every caller already has `tenantId`, and the GSI caused eventual-consistency 404s after create while moving Workspace isolation into an app-level `if` check.
+- Newest-first list uses GSI `byTenantCreatedAt` (`tenantId` + `createdAt`) so ordering is by time without weakening partition isolation (see `docs/security/phase-harden-core-tools.md`).
 - Ad-hoc relational queries (search, cross-Workspace analytics) are deliberately out of scope; adding them later means adding a projection, not bending this table.

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -14,8 +15,10 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import type {
   DirectUploadResponse,
+  ListStatementsParams,
   ListStatementsResponse,
   StatementRecord,
+  StatementStatus,
   StatementStatusResponse,
   StatementSummaryView,
   StructuredError,
@@ -43,7 +46,21 @@ import {
   type QuotaSeamDeps,
 } from "./quota-service.ts";
 
-const LIST_LIMIT = 20;
+export const LIST_DEFAULT_LIMIT = 20;
+export const LIST_MAX_LIMIT = 50;
+/** GSI: tenantId (PK) + createdAt (SK) — newest-first list without UUID ordering. */
+export const BY_TENANT_CREATED_AT_INDEX = "byTenantCreatedAt";
+/** Reuse uploads with the same content hash or Idempotency-Key within this window. */
+export const IDEMPOTENCY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const IDEMPOTENCY_SCAN_PAGE = 50;
+
+const STATEMENT_STATUSES: ReadonlySet<string> = new Set([
+  "pending_upload",
+  "uploaded",
+  "processing",
+  "ready",
+  "failed",
+]);
 
 /** Minimal command sender — lets tests inject fakes without AWS SDK. */
 export interface CommandClient {
@@ -60,6 +77,14 @@ export interface StatementSeamDeps {
    * Omitted in pure lifecycle unit tests; production resolves from env.
    */
   quota?: QuotaSeamDeps;
+  /** Injectable clock for idempotency window tests. */
+  now?: () => Date;
+}
+
+export interface UploadStatementOptions {
+  filename?: string;
+  /** REST Idempotency-Key / MCP idempotency_key — reused within the window. */
+  idempotencyKey?: string;
 }
 
 function envTableName(): string {
@@ -98,6 +123,69 @@ function defaultDeps(): StatementSeamDeps {
           },
         }
       : {}),
+  };
+}
+
+function currentTime(deps: StatementSeamDeps): Date {
+  return deps.now ? deps.now() : new Date();
+}
+
+export function contentHashOf(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function clampListLimit(limit: number | undefined): number {
+  if (limit === undefined || Number.isNaN(limit)) {
+    return LIST_DEFAULT_LIMIT;
+  }
+  return Math.min(LIST_MAX_LIMIT, Math.max(1, Math.floor(limit)));
+}
+
+export function encodeListCursor(key: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(key), "utf8").toString("base64url");
+}
+
+export function decodeListCursor(
+  token: string,
+  tenantId: string,
+): Record<string, unknown> | StructuredError {
+  try {
+    const parsed = JSON.parse(Buffer.from(token, "base64url").toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      parsed.tenantId !== tenantId ||
+      typeof parsed.statementId !== "string" ||
+      typeof parsed.createdAt !== "string"
+    ) {
+      return {
+        code: "INVALID_CURSOR",
+        message: "List cursor is invalid or expired",
+        retryable: false,
+        nextStep: "Omit nextToken and start a fresh list_statements / GET /v1/statements",
+      };
+    }
+    return parsed;
+  } catch {
+    return {
+      code: "INVALID_CURSOR",
+      message: "List cursor could not be decoded",
+      retryable: false,
+      nextStep: "Omit nextToken and start a fresh list_statements / GET /v1/statements",
+    };
+  }
+}
+
+function invalidStatusError(status: string): StructuredError {
+  return {
+    code: "INVALID_STATUS_FILTER",
+    message: `Unknown status filter: ${status}`,
+    retryable: false,
+    nextStep:
+      "Use status=pending_upload|uploaded|processing|ready|failed (or omit status)",
   };
 }
 
@@ -157,17 +245,75 @@ async function hydrateTransactionExtract(
   };
 }
 
+/**
+ * Find a recent Statement with matching contentHash and/or idempotencyKey.
+ * Scans newest-first via byTenantCreatedAt within the idempotency window.
+ */
+export async function findRecentDuplicateUpload(
+  deps: StatementSeamDeps,
+  tenantId: string,
+  params: { contentHash?: string; idempotencyKey?: string },
+): Promise<StatementRecord | null> {
+  const { contentHash, idempotencyKey } = params;
+  if (!contentHash && !idempotencyKey) {
+    return null;
+  }
+
+  const cutoff = new Date(currentTime(deps).getTime() - IDEMPOTENCY_WINDOW_MS).toISOString();
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+
+  for (let page = 0; page < 3; page += 1) {
+    const result = (await deps.ddb.send(
+      new QueryCommand({
+        TableName: deps.tableName,
+        IndexName: BY_TENANT_CREATED_AT_INDEX,
+        KeyConditionExpression: "tenantId = :tenantId",
+        ExpressionAttributeValues: { ":tenantId": tenantId },
+        ScanIndexForward: false,
+        Limit: IDEMPOTENCY_SCAN_PAGE,
+        ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
+      }),
+    )) as {
+      Items?: StatementRecord[];
+      LastEvaluatedKey?: Record<string, unknown>;
+    };
+
+    for (const item of result.Items ?? []) {
+      if (item.createdAt < cutoff) {
+        return null;
+      }
+      if (idempotencyKey && item.idempotencyKey === idempotencyKey) {
+        return item;
+      }
+      if (contentHash && item.contentHash === contentHash) {
+        return item;
+      }
+    }
+
+    if (!result.LastEvaluatedKey) {
+      return null;
+    }
+    exclusiveStartKey = result.LastEvaluatedKey;
+  }
+
+  return null;
+}
+
 export async function createStatementAndUploadFile(
   deps: StatementSeamDeps,
   params: {
     tenantId: string;
     fileBytes: Uint8Array;
     fileType: StatementFileType;
+    contentHash?: string;
+    idempotencyKey?: string;
   },
 ): Promise<{ statementId: string; s3Key: string; record: StatementRecord }> {
   const { statementId, s3Key, record } = buildPendingStatement({
     tenantId: params.tenantId,
     sourceFormat: params.fileType,
+    contentHash: params.contentHash,
+    idempotencyKey: params.idempotencyKey,
   });
 
   await putPendingStatement(deps, record);
@@ -187,19 +333,65 @@ export async function createStatementAndUploadFile(
 export async function listStatementsWith(
   deps: StatementSeamDeps,
   tenantId: string,
-): Promise<ListStatementsResponse> {
+  params: ListStatementsParams = {},
+): Promise<ListStatementsResponse | StructuredError> {
+  const limit = clampListLimit(params.limit);
+
+  if (params.status !== undefined && !STATEMENT_STATUSES.has(params.status)) {
+    return invalidStatusError(params.status);
+  }
+
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+  if (params.nextToken) {
+    const decoded = decodeListCursor(params.nextToken, tenantId);
+    if ("code" in decoded) {
+      return decoded;
+    }
+    exclusiveStartKey = decoded;
+  }
+
+  const expressionAttributeValues: Record<string, string> = {
+    ":tenantId": tenantId,
+  };
+  const expressionAttributeNames: Record<string, string> = {};
+  let filterExpression: string | undefined;
+
+  if (params.status) {
+    expressionAttributeValues[":status"] = params.status;
+    expressionAttributeNames["#status"] = "status";
+    filterExpression = "#status = :status";
+  }
+
   const result = (await deps.ddb.send(
     new QueryCommand({
       TableName: deps.tableName,
+      IndexName: BY_TENANT_CREATED_AT_INDEX,
       KeyConditionExpression: "tenantId = :tenantId",
-      ExpressionAttributeValues: { ":tenantId": tenantId },
+      ExpressionAttributeValues: expressionAttributeValues,
+      ...(Object.keys(expressionAttributeNames).length > 0
+        ? { ExpressionAttributeNames: expressionAttributeNames }
+        : {}),
+      ...(filterExpression ? { FilterExpression: filterExpression } : {}),
       ScanIndexForward: false,
-      Limit: LIST_LIMIT,
+      Limit: limit,
+      ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
     }),
-  )) as { Items?: StatementRecord[] };
+  )) as {
+    Items?: StatementRecord[];
+    LastEvaluatedKey?: Record<string, unknown>;
+  };
 
   const statements = (result.Items ?? []).map(toListItem);
-  return { statements, count: statements.length };
+  const response: ListStatementsResponse = {
+    statements,
+    count: statements.length,
+  };
+
+  if (result.LastEvaluatedKey) {
+    response.nextToken = encodeListCursor(result.LastEvaluatedKey);
+  }
+
+  return response;
 }
 
 export async function getStatementWith(
@@ -226,8 +418,14 @@ export async function uploadStatementWith(
   deps: StatementSeamDeps,
   tenantId: string,
   fileBytes: Uint8Array,
-  filename?: string,
+  filenameOrOptions?: string | UploadStatementOptions,
 ): Promise<DirectUploadResponse | StructuredError> {
+  const options: UploadStatementOptions =
+    typeof filenameOrOptions === "string"
+      ? { filename: filenameOrOptions }
+      : (filenameOrOptions ?? {});
+  const { filename, idempotencyKey } = options;
+
   const fileType: StatementFileType | null = detectFileType(filename, fileBytes);
   if (!fileType) {
     return {
@@ -248,6 +446,20 @@ export async function uploadStatementWith(
     };
   }
 
+  const contentHash = contentHashOf(fileBytes);
+  const duplicate = await findRecentDuplicateUpload(deps, tenantId, {
+    contentHash,
+    idempotencyKey,
+  });
+  if (duplicate) {
+    return {
+      statementId: duplicate.statementId,
+      s3Key: duplicate.s3Key,
+      status: duplicate.status,
+      idempotentReplay: true,
+    };
+  }
+
   if (deps.quota) {
     const quotaError = await enforceUploadQuotas(tenantId, deps.quota);
     if (quotaError) {
@@ -259,6 +471,8 @@ export async function uploadStatementWith(
     tenantId,
     fileBytes,
     fileType,
+    contentHash,
+    idempotencyKey,
   });
 
   return {
@@ -307,8 +521,11 @@ export async function deleteStatementWith(
 }
 
 /** Production entry points — resolve env + default AWS clients. */
-export async function listStatements(tenantId: string): Promise<ListStatementsResponse> {
-  return listStatementsWith(defaultDeps(), tenantId);
+export async function listStatements(
+  tenantId: string,
+  params: ListStatementsParams = {},
+): Promise<ListStatementsResponse | StructuredError> {
+  return listStatementsWith(defaultDeps(), tenantId, params);
 }
 
 export async function getStatement(
@@ -322,9 +539,9 @@ export async function getStatement(
 export async function uploadStatement(
   tenantId: string,
   fileBytes: Uint8Array,
-  filename?: string,
+  filenameOrOptions?: string | UploadStatementOptions,
 ): Promise<DirectUploadResponse | StructuredError> {
-  return uploadStatementWith(defaultDeps(), tenantId, fileBytes, filename);
+  return uploadStatementWith(defaultDeps(), tenantId, fileBytes, filenameOrOptions);
 }
 
 export async function deleteStatement(
@@ -337,4 +554,8 @@ export async function deleteStatement(
 /** Resolve default seam deps from env (for handlers that need putPendingStatement / create). */
 export function resolveStatementSeamDeps(): StatementSeamDeps {
   return defaultDeps();
+}
+
+export function isStatementStatus(value: string): value is StatementStatus {
+  return STATEMENT_STATUSES.has(value);
 }

@@ -144,8 +144,8 @@ All statement routes accept `Authorization: Bearer` (Cognito) or `X-Api-Key` (ag
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/v1/statements` | Create statement + presigned upload URL |
-| `POST` | `/v1/statements/upload` | Direct upload (JSON `{ base64, filename }`) |
-| `GET` | `/v1/statements` | List recent statements |
+| `POST` | `/v1/statements/upload` | Direct upload (JSON `{ base64, filename }`; optional `Idempotency-Key`) |
+| `GET` | `/v1/statements` | List statements (`limit`, `nextToken`, `status`) |
 | `GET` | `/v1/statements/{id}?detail=summary\|full` | Get status / analysis |
 | `DELETE` | `/v1/statements/{id}` | Delete statement + S3 object |
 | `POST` | `/v1/api-keys` | Mint key (Cognito; plaintext once) |
@@ -185,9 +185,9 @@ curl -s -X DELETE "$API_URL/v1/statements/$STATEMENT_ID" \
 
 | Tool | Description |
 |------|-------------|
-| `upload_statement` | Upload PDF/CSV as base64 + filename |
+| `upload_statement` | Upload PDF/CSV as base64 + filename (optional `idempotency_key`) |
 | `get_statement` | Poll status and summary (`detail=summary\|full`) |
-| `list_statements` | List up to 20 recent uploads |
+| `list_statements` | List uploads newest-first (`limit`, `nextToken`, `status`) |
 | `delete_statement` | Permanently delete a statement |
 
 ### Cursor config (dev)

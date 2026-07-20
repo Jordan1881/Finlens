@@ -7,6 +7,8 @@ export interface BuildPendingStatementParams {
   sourceFormat: StatementFileType;
   statementId?: string;
   now?: string;
+  contentHash?: string;
+  idempotencyKey?: string;
 }
 
 export interface PendingStatementParts {
@@ -32,6 +34,8 @@ export function buildPendingStatement(
     sourceFormat: params.sourceFormat,
     createdAt: now,
     updatedAt: now,
+    ...(params.contentHash ? { contentHash: params.contentHash } : {}),
+    ...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
   };
 
   return { statementId, s3Key, record };

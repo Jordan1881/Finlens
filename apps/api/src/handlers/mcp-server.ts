@@ -88,7 +88,7 @@ function createMcpServer(tenantId: string): McpServer {
     "upload_statement",
     {
       description:
-        "Upload a bank statement PDF or CSV for analysis. Use base64+filename (read local files yourself). Returns statementId for polling.",
+        "Upload a bank statement PDF or CSV for analysis. Use base64+filename (read local files yourself). Returns statementId for polling. Retries with the same file or idempotency_key within 24h reuse the same statementId.",
       inputSchema: {
         base64: z.string().optional().describe("Base64-encoded PDF or CSV bytes"),
         filename: z
@@ -99,9 +99,13 @@ function createMcpServer(tenantId: string): McpServer {
           .string()
           .optional()
           .describe("Not supported on remote server — read the file and pass base64 instead"),
+        idempotency_key: z
+          .string()
+          .optional()
+          .describe("Optional key to reuse the same statementId on retry within 24h"),
       },
     },
-    async ({ base64, filename, file_path }) => {
+    async ({ base64, filename, file_path, idempotency_key }) => {
       if (file_path && !base64) {
         return toolError(
           "FILE_PATH_NOT_SUPPORTED",
@@ -145,7 +149,10 @@ function createMcpServer(tenantId: string): McpServer {
         );
       }
 
-      const result = await uploadStatement(tenantId, fileBytes, filename);
+      const result = await uploadStatement(tenantId, fileBytes, {
+        filename,
+        ...(idempotency_key ? { idempotencyKey: idempotency_key } : {}),
+      });
       if ("code" in result) {
         return toolError(result.code, result.message, result.retryable, result.nextStep);
       }
@@ -158,6 +165,7 @@ function createMcpServer(tenantId: string): McpServer {
               {
                 statementId: result.statementId,
                 status: result.status,
+                ...(result.idempotentReplay ? { idempotentReplay: true } : {}),
                 nextStep: "Poll get_statement every ~15s until ready or failed",
               },
               null,
@@ -189,7 +197,7 @@ function createMcpServer(tenantId: string): McpServer {
           "NOT_FOUND",
           "Statement not found",
           false,
-          "Check statementId or upload a new statement",
+          "Check statementId via list_statements or upload a new statement",
         );
       }
 
@@ -202,11 +210,35 @@ function createMcpServer(tenantId: string): McpServer {
   server.registerTool(
     "list_statements",
     {
-      description: "List up to 20 recent statement uploads for the current user, newest first.",
-      inputSchema: {},
+      description:
+        "List recent statement uploads for the Workspace, newest first by createdAt. Supports pagination (limit, nextToken) and optional status filter. sourceFormat is pdf|csv when known.",
+      inputSchema: {
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe("Page size (default 20, max 50)"),
+        nextToken: z
+          .string()
+          .optional()
+          .describe("Opaque cursor from a previous list_statements response"),
+        status: z
+          .enum(["pending_upload", "uploaded", "processing", "ready", "failed"])
+          .optional()
+          .describe("Optional status filter (pages may be short — follow nextToken)"),
+      },
     },
-    async () => {
-      const data = await listStatements(tenantId);
+    async ({ limit, nextToken, status }) => {
+      const data = await listStatements(tenantId, {
+        ...(limit !== undefined ? { limit } : {}),
+        ...(nextToken ? { nextToken } : {}),
+        ...(status ? { status } : {}),
+      });
+      if ("code" in data) {
+        return toolError(data.code, data.message, data.retryable, data.nextStep);
+      }
       return {
         content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
       };

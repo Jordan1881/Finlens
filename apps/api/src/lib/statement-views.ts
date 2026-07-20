@@ -6,13 +6,14 @@ import type {
   StructuredError,
 } from "@finlens/domain";
 
-/** Structured error for a failed analysis — shared by summary views. */
+/** Structured error for a failed analysis — shared by summary and full views. */
 export function analysisFailedError(message: string): StructuredError {
   return {
     code: "ANALYSIS_FAILED",
     message,
     retryable: true,
-    nextStep: "Call upload_statement again with the PDF or CSV",
+    nextStep:
+      "Call upload_statement again with the PDF or CSV (or reuse Idempotency-Key / same file within 24h)",
   };
 }
 
@@ -35,6 +36,7 @@ export function toSummaryView(record: StatementRecord): StatementSummaryView {
     status: record.status,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    sourceFormat: record.sourceFormat,
   };
 
   if (record.status === "failed" && record.errorMessage) {
@@ -62,8 +64,13 @@ export function toFullStatusResponse(record: StatementRecord): StatementStatusRe
     status: record.status,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    sourceFormat: record.sourceFormat,
     errorMessage: record.errorMessage,
   };
+
+  if (record.status === "failed" && record.errorMessage) {
+    response.error = analysisFailedError(record.errorMessage);
+  }
 
   if (record.status === "ready") {
     response.financialSummary = record.financialSummary;

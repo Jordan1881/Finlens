@@ -11,8 +11,12 @@ import {
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { buildPendingStatement, sourceFormatForContentType } from "./statement-record.ts";
 import {
+  BY_TENANT_CREATED_AT_INDEX,
+  contentHashOf,
   createStatementAndUploadFile,
+  decodeListCursor,
   deleteStatementWith,
+  encodeListCursor,
   getStatementWith,
   listStatementsWith,
   putPendingStatement,
@@ -122,6 +126,7 @@ describe("Statement view / lifecycle mapping", () => {
     assert.equal(failed.financialSummary, undefined);
     assert.equal(failed.transactionExtract, undefined);
     assert.equal(failed.errorMessage, "parse error");
+    assert.deepEqual(failed.error, analysisFailedError("parse error"));
   });
 
   it("full status returns S3 pointer when extract not hydrated", () => {
@@ -185,6 +190,17 @@ describe("Pending Statement record builder", () => {
 
 type SentCommand = { name: string; input: Record<string, unknown> };
 
+function applyStatusFilter(
+  items: StatementRecord[],
+  filterExpression: string | undefined,
+  values: Record<string, string> | undefined,
+): StatementRecord[] {
+  if (!filterExpression || !values?.[":status"]) {
+    return items;
+  }
+  return items.filter((r) => r.status === values[":status"]);
+}
+
 function createMemoryDeps(seed: StatementRecord[] = []): {
   deps: StatementSeamDeps;
   sent: SentCommand[];
@@ -208,12 +224,56 @@ function createMemoryDeps(seed: StatementRecord[] = []): {
         return { Item: store.get(`${key.tenantId}#${key.statementId}`) };
       }
       if (command instanceof QueryCommand) {
-        const values = cmd.input.ExpressionAttributeValues as { ":tenantId": string };
+        const values = cmd.input.ExpressionAttributeValues as Record<string, string>;
         const tenantId = values[":tenantId"];
-        const items = [...store.values()]
-          .filter((r) => r.tenantId === tenantId)
-          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-        return { Items: items.slice(0, (cmd.input.Limit as number) ?? 20) };
+        const limit = (cmd.input.Limit as number) ?? 20;
+        const indexName = cmd.input.IndexName as string | undefined;
+        const forward = cmd.input.ScanIndexForward !== false;
+        let items = [...store.values()].filter((r) => r.tenantId === tenantId);
+
+        if (indexName === BY_TENANT_CREATED_AT_INDEX || indexName === undefined) {
+          items.sort((a, b) =>
+            forward
+              ? a.createdAt.localeCompare(b.createdAt)
+              : b.createdAt.localeCompare(a.createdAt),
+          );
+        } else {
+          items.sort((a, b) =>
+            forward
+              ? a.statementId.localeCompare(b.statementId)
+              : b.statementId.localeCompare(a.statementId),
+          );
+        }
+
+        const start = cmd.input.ExclusiveStartKey as
+          | { tenantId: string; statementId: string; createdAt?: string }
+          | undefined;
+        if (start?.statementId) {
+          const idx = items.findIndex((r) => r.statementId === start.statementId);
+          items = idx >= 0 ? items.slice(idx + 1) : items;
+        }
+
+        // DynamoDB applies Limit before FilterExpression.
+        const limited = items.slice(0, limit);
+        const filtered = applyStatusFilter(
+          limited,
+          cmd.input.FilterExpression as string | undefined,
+          values,
+        );
+        const lastSource = limited[limited.length - 1];
+        const hasMore = items.length > limit;
+        return {
+          Items: filtered,
+          ...(hasMore && lastSource
+            ? {
+                LastEvaluatedKey: {
+                  tenantId: lastSource.tenantId,
+                  statementId: lastSource.statementId,
+                  createdAt: lastSource.createdAt,
+                },
+              }
+            : {}),
+        };
       }
       if (command instanceof PutCommand) {
         const item = cmd.input.Item as StatementRecord;
@@ -268,6 +328,7 @@ function createMemoryDeps(seed: StatementRecord[] = []): {
       s3,
       tableName: "Statements",
       bucketName: "bucket",
+      now: () => new Date(NOW),
     },
     sent,
     store,
@@ -301,8 +362,151 @@ describe("Statement seam authz (tenant isolation)", () => {
     ]);
 
     const listed = await listStatementsWith(deps, "tenant-a");
+    assert.equal("code" in listed, false);
+    if ("code" in listed) return;
     assert.equal(listed.count, 1);
     assert.equal(listed.statements[0]?.statementId, "a1");
+  });
+});
+
+describe("Statement list pagination and filters", () => {
+  it("queries byTenantCreatedAt newest-first with nextToken cursor", async () => {
+    const { deps, sent } = createMemoryDeps([
+      baseRecord({
+        statementId: "old",
+        createdAt: "2026-07-01T00:00:00.000Z",
+        sourceFormat: "csv",
+      }),
+      baseRecord({
+        statementId: "mid",
+        createdAt: "2026-07-10T00:00:00.000Z",
+        sourceFormat: "pdf",
+      }),
+      baseRecord({
+        statementId: "new",
+        createdAt: "2026-07-20T00:00:00.000Z",
+        sourceFormat: "pdf",
+      }),
+    ]);
+
+    const page1 = await listStatementsWith(deps, "tenant-a", { limit: 2 });
+    assert.equal("code" in page1, false);
+    if ("code" in page1) return;
+    assert.equal(page1.count, 2);
+    assert.deepEqual(
+      page1.statements.map((s) => s.statementId),
+      ["new", "mid"],
+    );
+    assert.equal(page1.statements[0]?.sourceFormat, "pdf");
+    assert.ok(page1.nextToken);
+
+    const query = sent.find((c) => c.name === "QueryCommand");
+    assert.equal(query?.input.IndexName, BY_TENANT_CREATED_AT_INDEX);
+    assert.equal(query?.input.ScanIndexForward, false);
+
+    const page2 = await listStatementsWith(deps, "tenant-a", {
+      limit: 2,
+      nextToken: page1.nextToken,
+    });
+    assert.equal("code" in page2, false);
+    if ("code" in page2) return;
+    assert.equal(page2.count, 1);
+    assert.equal(page2.statements[0]?.statementId, "old");
+    assert.equal(page2.statements[0]?.sourceFormat, "csv");
+    assert.equal(page2.nextToken, undefined);
+  });
+
+  it("filters by status and rejects invalid status", async () => {
+    const { deps } = createMemoryDeps([
+      baseRecord({ statementId: "r1", status: "ready", createdAt: "2026-07-03T00:00:00.000Z" }),
+      baseRecord({
+        statementId: "f1",
+        status: "failed",
+        createdAt: "2026-07-02T00:00:00.000Z",
+      }),
+      baseRecord({
+        statementId: "r2",
+        status: "ready",
+        createdAt: "2026-07-01T00:00:00.000Z",
+      }),
+    ]);
+
+    const ready = await listStatementsWith(deps, "tenant-a", { status: "ready", limit: 10 });
+    assert.equal("code" in ready, false);
+    if ("code" in ready) return;
+    assert.equal(ready.count, 2);
+    assert.ok(ready.statements.every((s) => s.status === "ready"));
+
+    const bad = await listStatementsWith(deps, "tenant-a", {
+      status: "nope" as "ready",
+    });
+    assert.ok("code" in bad);
+    assert.equal(bad.code, "INVALID_STATUS_FILTER");
+    assert.ok(bad.nextStep.length > 0);
+  });
+
+  it("rejects cursors from another tenant", () => {
+    const token = encodeListCursor({
+      tenantId: "tenant-b",
+      statementId: "x",
+      createdAt: NOW,
+    });
+    const decoded = decodeListCursor(token, "tenant-a");
+    assert.ok("code" in decoded);
+    assert.equal(decoded.code, "INVALID_CURSOR");
+  });
+});
+
+describe("Statement upload idempotency", () => {
+  const minimalPdf = new TextEncoder().encode(
+    "%PDF-1.4\n%âãÏÓ\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n",
+  );
+
+  it("reuses statementId for identical content within the window without a second Put", async () => {
+    const { deps, store, sent } = createMemoryDeps();
+
+    const first = await uploadStatementWith(deps, "tenant-a", minimalPdf, "a.pdf");
+    assert.equal("code" in first, false);
+    if ("code" in first) return;
+    assert.equal(first.idempotentReplay, undefined);
+    assert.equal(store.size, 1);
+    assert.equal(
+      store.get(`tenant-a#${first.statementId}`)?.contentHash,
+      contentHashOf(minimalPdf),
+    );
+
+    const putsBefore = sent.filter((c) => c.name === "PutCommand").length;
+    const second = await uploadStatementWith(deps, "tenant-a", minimalPdf, "a.pdf");
+    assert.equal("code" in second, false);
+    if ("code" in second) return;
+    assert.equal(second.statementId, first.statementId);
+    assert.equal(second.idempotentReplay, true);
+    assert.equal(store.size, 1);
+    assert.equal(sent.filter((c) => c.name === "PutCommand").length, putsBefore);
+  });
+
+  it("reuses statementId when Idempotency-Key matches within the window", async () => {
+    const { deps, store } = createMemoryDeps();
+    const otherPdf = new TextEncoder().encode(
+      "%PDF-1.4\n%âãÏÓ\n2 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n",
+    );
+
+    const first = await uploadStatementWith(deps, "tenant-a", minimalPdf, {
+      filename: "a.pdf",
+      idempotencyKey: "retry-1",
+    });
+    assert.equal("code" in first, false);
+    if ("code" in first) return;
+
+    const second = await uploadStatementWith(deps, "tenant-a", otherPdf, {
+      filename: "b.pdf",
+      idempotencyKey: "retry-1",
+    });
+    assert.equal("code" in second, false);
+    if ("code" in second) return;
+    assert.equal(second.statementId, first.statementId);
+    assert.equal(second.idempotentReplay, true);
+    assert.equal(store.size, 1);
   });
 });
 
@@ -542,6 +746,7 @@ function createQuotaAwareUploadDeps(options: {
 
 describe("Statement seam quota denials", () => {
   const minimalPdf = new TextEncoder().encode("%PDF-1.4\n%âãÏÓ\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n");
+  const otherPdf = new TextEncoder().encode("%PDF-1.4\n%âãÏÓ\n2 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n");
 
   it("uploadStatementWith returns QUOTA_UPLOADS_EXCEEDED when daily limit hit", async () => {
     const { deps, quotaStore } = createQuotaAwareUploadDeps({ uploadLimit: 1 });
@@ -549,7 +754,7 @@ describe("Statement seam quota denials", () => {
     const first = await uploadStatementWith(deps, "tenant-a", minimalPdf, "a.pdf");
     assert.equal("code" in first, false);
 
-    const second = await uploadStatementWith(deps, "tenant-a", minimalPdf, "b.pdf");
+    const second = await uploadStatementWith(deps, "tenant-a", otherPdf, "b.pdf");
     assert.ok("code" in second);
     assert.equal(second.code, "QUOTA_UPLOADS_EXCEEDED");
     assert.equal(second.retryable, true);
@@ -570,5 +775,20 @@ describe("Statement seam quota denials", () => {
     assert.ok("code" in result);
     assert.equal(result.code, "QUOTA_CONCURRENT_ANALYSES_EXCEEDED");
     assert.equal(result.retryable, true);
+  });
+
+  it("idempotent replay does not consume another upload quota slot", async () => {
+    const { deps, quotaStore } = createQuotaAwareUploadDeps({ uploadLimit: 1 });
+
+    const first = await uploadStatementWith(deps, "tenant-a", minimalPdf, "a.pdf");
+    assert.equal("code" in first, false);
+
+    const replay = await uploadStatementWith(deps, "tenant-a", minimalPdf, "a.pdf");
+    assert.equal("code" in replay, false);
+    if ("code" in replay) return;
+    assert.equal(replay.idempotentReplay, true);
+
+    const keys = quotaCounterKeys("tenant-a", "uploads", "2026-07-21");
+    assert.equal(quotaStore.get(`${keys.pk}#${keys.sk}`)?.count, 1);
   });
 });

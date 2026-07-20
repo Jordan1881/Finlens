@@ -53,7 +53,7 @@ export function forbidden(message = "Forbidden"): APIGatewayProxyResultV2 {
 
 export function notFound(
   message: string,
-  nextStep = "Check the statementId or upload a new statement",
+  nextStep = "Check statementId via list_statements / GET /v1/statements, or upload a new statement",
 ): APIGatewayProxyResultV2 {
   return structuredError(404, "NOT_FOUND", message, false, nextStep);
 }

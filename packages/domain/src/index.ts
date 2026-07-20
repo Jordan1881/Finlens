@@ -61,6 +61,10 @@ export interface StatementRecord {
   transactionExtract?: ExtractedTransaction[];
   /** Tenant-prefixed S3 object when extract exceeds the DynamoDB size cap. */
   transactionExtractS3Key?: string;
+  /** SHA-256 hex of uploaded bytes — used for practical upload idempotency. */
+  contentHash?: string;
+  /** Client-supplied Idempotency-Key — reused within the idempotency window. */
+  idempotencyKey?: string;
 }
 
 export interface CreateStatementResponse {
@@ -74,6 +78,8 @@ export interface DirectUploadResponse {
   statementId: string;
   s3Key: string;
   status: StatementStatus;
+  /** True when a recent duplicate (content hash or Idempotency-Key) was reused. */
+  idempotentReplay?: boolean;
 }
 
 export interface StatementStatusResponse {
@@ -81,7 +87,10 @@ export interface StatementStatusResponse {
   status: StatementStatus;
   createdAt: string;
   updatedAt: string;
+  sourceFormat?: "pdf" | "csv";
   errorMessage?: string;
+  /** Structured failure — same shape as summary `error` when status is failed. */
+  error?: StructuredError;
   financialSummary?: FinancialSummary;
   spendingInsights?: string[];
   /** Present on detail=full when Analysis completed (hydrated from DDB or S3). */
@@ -95,6 +104,7 @@ export interface StatementSummaryView {
   status: StatementStatus;
   createdAt: string;
   updatedAt: string;
+  sourceFormat?: "pdf" | "csv";
   currency?: string;
   month?: string | null;
   totalIncome?: number;
@@ -114,9 +124,20 @@ export interface StatementListItem {
   sourceFormat?: "pdf" | "csv";
 }
 
+export interface ListStatementsParams {
+  /** Page size (default 20, max 50). */
+  limit?: number;
+  /** Opaque cursor from a previous response's nextToken. */
+  nextToken?: string;
+  /** Optional status filter (may yield short pages — follow nextToken). */
+  status?: StatementStatus;
+}
+
 export interface ListStatementsResponse {
   statements: StatementListItem[];
   count: number;
+  /** Present when more results are available — pass as nextToken / cursor. */
+  nextToken?: string;
 }
 
 export interface DeleteStatementResponse {

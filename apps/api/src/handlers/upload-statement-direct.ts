@@ -4,6 +4,22 @@ import { isQuotaError } from "../lib/quota-service";
 import { uploadStatement } from "../lib/statement-service";
 import { resolveTenantId } from "../lib/auth";
 
+function headerValue(
+  headers: APIGatewayProxyEventV2["headers"],
+  name: string,
+): string | undefined {
+  if (!headers) {
+    return undefined;
+  }
+  const lower = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === lower && value) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 export async function handler(
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyResultV2> {
@@ -56,7 +72,11 @@ export async function handler(
     );
   }
 
-  const result = await uploadStatement(tenantId, fileBytes, filename);
+  const idempotencyKey = headerValue(event.headers, "Idempotency-Key");
+  const result = await uploadStatement(tenantId, fileBytes, {
+    filename,
+    ...(idempotencyKey ? { idempotencyKey } : {}),
+  });
   if ("code" in result) {
     if (isQuotaError(result)) {
       return tooManyRequests(result.code, result.message, result.nextStep, result.retryable);
@@ -64,5 +84,5 @@ export async function handler(
     return structuredError(400, result.code, result.message, result.retryable, result.nextStep);
   }
 
-  return json(201, result);
+  return json(result.idempotentReplay ? 200 : 201, result);
 }

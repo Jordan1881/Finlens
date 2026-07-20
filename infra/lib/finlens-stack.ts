@@ -112,6 +112,15 @@ export class FinlensStack extends cdk.Stack {
       timeToLiveAttribute: "expiresAt",
     });
 
+    // Newest-first list without scanning UUID sort keys (#25). Partition stays tenantId
+    // so Workspace isolation remains key-based (unlike the removed byStatementId GSI).
+    statementsTable.addGlobalSecondaryIndex({
+      indexName: "byTenantCreatedAt",
+      partitionKey: { name: "tenantId", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "createdAt", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     const repoRoot = path.join(__dirname, "../..");
     const cognitoEnv =
       cognitoUserPoolId && cognitoClientId
