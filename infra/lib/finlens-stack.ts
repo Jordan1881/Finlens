@@ -386,12 +386,25 @@ export class FinlensStack extends cdk.Stack {
       "arn:aws:bedrock:*::foundation-model/*",
       "arn:aws:bedrock:*:*:inference-profile/*",
     ];
+    // First invoke of Marketplace-sold Anthropic models auto-subscribes the account.
+    // Without these actions Bedrock returns AccessDeniedException (not a quota/token issue).
+    const bedrockMarketplaceActions = [
+      "aws-marketplace:ViewSubscriptions",
+      "aws-marketplace:Subscribe",
+      "aws-marketplace:Unsubscribe",
+    ] as const;
     // Separate PolicyStatement instances — CDK forbids attaching one statement to multiple roles.
     for (const fn of [analyzeStatementFn, mcpServerFn, askStatementFn]) {
       fn.addToRolePolicy(
         new iam.PolicyStatement({
           actions: [...bedrockActions],
           resources: bedrockResources,
+        }),
+      );
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: [...bedrockMarketplaceActions],
+          resources: ["*"],
         }),
       );
     }
