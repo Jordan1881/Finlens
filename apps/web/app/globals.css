@@ -788,3 +788,48 @@ tbody tr.row-selected {
     grid-template-columns: 1fr;
   }
 }
+
+.auth-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  background:
+    radial-gradient(circle at 20% 20%, #e6f4ff 0%, transparent 45%),
+    radial-gradient(circle at 80% 0%, #f9f0ff 0%, transparent 40%),
+    var(--bg);
+}
+
+.auth-card {
+  width: min(420px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  align-items: flex-start;
+}
+
+.auth-card h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.auth-card p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.auth-brand {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: var(--primary);
+  color: #fff;
+  font-weight: 700;
+}

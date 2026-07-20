@@ -1,9 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api, apiConfigured } from "../lib/api";
+import {
+  beginLogin,
+  beginLogout,
+  isAuthenticated,
+  isCognitoConfigured,
+} from "../lib/auth";
 
-const API_URL = process.env.NEXT_PUBLIC_FINLENS_API_URL ?? "";
-const API_KEY = process.env.NEXT_PUBLIC_FINLENS_API_KEY ?? "";
 const POLL_MS = 15_000;
 
 type Section = "dashboard" | "statements" | "insights";
@@ -30,33 +35,6 @@ type StatementDetail = {
   spendingInsights?: string[];
   error?: { message: string; nextStep?: string; code?: string };
 };
-
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
-    ...init,
-    headers: {
-      "X-Api-Key": API_KEY,
-      ...(init?.headers ?? {}),
-    },
-  });
-
-  const text = await res.text();
-  if (!res.ok) {
-    try {
-      const body = JSON.parse(text) as { error?: { message?: string } };
-      if (body.error?.message) {
-        throw new Error(body.error.message);
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message !== text) {
-        throw error;
-      }
-    }
-    throw new Error(text || `Request failed (${res.status})`);
-  }
-
-  return JSON.parse(text) as T;
-}
 
 function formatMoney(value: number | undefined, currency = "ILS") {
   if (value === undefined) {
@@ -260,6 +238,9 @@ export default function HomePage() {
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [authed, setAuthed] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
+  const [loginBusy, setLoginBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -281,12 +262,25 @@ export default function HomePage() {
   }, [load, selectedId]);
 
   useEffect(() => {
+    setAuthed(isAuthenticated());
+    setAuthReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!authReady || !authed) {
+      setInitialLoading(false);
+      return;
+    }
+    setInitialLoading(true);
     load()
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setInitialLoading(false));
-  }, [load]);
+  }, [authReady, authed, load]);
 
   useEffect(() => {
+    if (!authed) {
+      return;
+    }
     const needsPoll =
       statements.some((s) => isProcessingStatus(s.status)) ||
       (selected != null && isProcessingStatus(selected.status));
@@ -300,10 +294,10 @@ export default function HomePage() {
     }, POLL_MS);
 
     return () => window.clearInterval(timer);
-  }, [statements, selected, refreshAll]);
+  }, [authed, statements, selected, refreshAll]);
 
   useEffect(() => {
-    if (section !== "insights") {
+    if (!authed || section !== "insights") {
       return;
     }
 
@@ -334,7 +328,7 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [section, statements]);
+  }, [authed, section, statements]);
 
   const stats = useMemo(() => {
     const ready = statements.filter((s) => s.status === "ready").length;
@@ -569,6 +563,54 @@ export default function HomePage() {
         ? "Browse uploads, open summaries, and track processing status."
         : "Highlights from analyzed statements.";
 
+  if (!authReady) {
+    return (
+      <main className="auth-screen">
+        <div className="auth-card">
+          <div className="brand-mark auth-brand">F</div>
+          <h1>Finlens</h1>
+          <p>Loading…</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (!authed) {
+    return (
+      <main className="auth-screen">
+        <div className="auth-card">
+          <div className="brand-mark auth-brand">F</div>
+          <h1>Finlens</h1>
+          <p>Sign in with Cognito to open your personal Workspace.</p>
+          {!isCognitoConfigured() && (
+            <div className="error-banner">
+              Cognito is not configured. Set NEXT_PUBLIC_COGNITO_USER_POOL_ID,
+              NEXT_PUBLIC_COGNITO_CLIENT_ID, and NEXT_PUBLIC_COGNITO_DOMAIN.
+            </div>
+          )}
+          {!apiConfigured() && (
+            <div className="error-banner">Set NEXT_PUBLIC_FINLENS_API_URL for API calls.</div>
+          )}
+          <button
+            type="button"
+            className="btn"
+            disabled={loginBusy || !isCognitoConfigured()}
+            onClick={() => {
+              setLoginBusy(true);
+              void beginLogin().catch((e) => {
+                setLoginBusy(false);
+                setError(e instanceof Error ? e.message : String(e));
+              });
+            }}
+          >
+            {loginBusy ? "Redirecting…" : "Sign in"}
+          </button>
+          {error && <div className="error-banner">{error}</div>}
+        </div>
+      </main>
+    );
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -645,6 +687,13 @@ export default function HomePage() {
               onClick={() => fileInputRef.current?.click()}
             >
               Upload
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              onClick={() => beginLogout()}
+            >
+              Sign out
             </button>
             <div className="avatar" aria-hidden>
               FL

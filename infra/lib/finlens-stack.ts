@@ -86,6 +86,15 @@ export class FinlensStack extends cdk.Stack {
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: stage === "prod" },
     });
 
+    // Single-table Workspace + membership (USER#sub / MEMBERSHIP, WORKSPACE#id / META).
+    const workspacesTable = new dynamodb.Table(this, "WorkspacesTable", {
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: stage === "prod" },
+    });
+
     const statementsTable = new dynamodb.Table(this, "StatementsTable", {
       partitionKey: { name: "tenantId", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "statementId", type: dynamodb.AttributeType.STRING },
@@ -96,14 +105,26 @@ export class FinlensStack extends cdk.Stack {
     });
 
     const repoRoot = path.join(__dirname, "../..");
+    const cognitoEnv =
+      cognitoUserPoolId && cognitoClientId
+        ? {
+            COGNITO_USER_POOL_ID: cognitoUserPoolId,
+            COGNITO_CLIENT_ID: cognitoClientId,
+            COGNITO_REGION: this.region,
+            ...(cognitoDomain ? { COGNITO_DOMAIN: cognitoDomain } : {}),
+          }
+        : {};
+
     const lambdaEnv = {
       STATEMENTS_BUCKET: statementsBucket.bucketName,
       STATEMENTS_TABLE: statementsTable.tableName,
       API_KEYS_TABLE: apiKeysTable.tableName,
+      WORKSPACES_TABLE: workspacesTable.tableName,
       STAGE: stage,
       BEDROCK_MODEL_ID: bedrockModelId,
       ...(bedrockModelIdCsv ? { BEDROCK_MODEL_ID_CSV: bedrockModelIdCsv } : {}),
       ...(stage === "dev" && devApiKey ? { DEV_API_KEY: devApiKey } : {}),
+      ...cognitoEnv,
     };
 
     const createStatementFn = new NodejsFunction(this, "CreateStatementFn", {
@@ -161,26 +182,13 @@ export class FinlensStack extends cdk.Stack {
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
-    const cognitoEnv =
-      cognitoUserPoolId && cognitoClientId
-        ? {
-            COGNITO_USER_POOL_ID: cognitoUserPoolId,
-            COGNITO_CLIENT_ID: cognitoClientId,
-            COGNITO_REGION: this.region,
-            ...(cognitoDomain ? { COGNITO_DOMAIN: cognitoDomain } : {}),
-          }
-        : {};
-
     const mcpServerFn = new NodejsFunction(this, "McpServerFn", {
       entry: path.join(repoRoot, "apps/api/src/handlers/mcp-server.ts"),
       handler: "handler",
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
-      environment: {
-        ...lambdaEnv,
-        ...cognitoEnv,
-      },
+      environment: lambdaEnv,
       logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
@@ -286,6 +294,12 @@ export class FinlensStack extends cdk.Stack {
     apiKeysTable.grantReadData(deleteStatementFn);
     apiKeysTable.grantReadData(uploadStatementDirectFn);
     apiKeysTable.grantReadData(mcpServerFn);
+    workspacesTable.grantReadWriteData(createStatementFn);
+    workspacesTable.grantReadWriteData(getStatementFn);
+    workspacesTable.grantReadWriteData(listStatementsFn);
+    workspacesTable.grantReadWriteData(deleteStatementFn);
+    workspacesTable.grantReadWriteData(uploadStatementDirectFn);
+    workspacesTable.grantReadWriteData(mcpServerFn);
 
     analyzeStatementFn.addToRolePolicy(
       new iam.PolicyStatement({
@@ -575,7 +589,17 @@ export class FinlensStack extends cdk.Stack {
       value: statementsAccessLogsBucket.bucketName,
     });
     new cdk.CfnOutput(this, "ApiKeysTableName", { value: apiKeysTable.tableName });
+    new cdk.CfnOutput(this, "WorkspacesTableName", { value: workspacesTable.tableName });
     new cdk.CfnOutput(this, "StatementsTableName", { value: statementsTable.tableName });
+    if (cognitoUserPoolId) {
+      new cdk.CfnOutput(this, "CognitoUserPoolId", { value: cognitoUserPoolId });
+    }
+    if (cognitoClientId) {
+      new cdk.CfnOutput(this, "CognitoClientId", { value: cognitoClientId });
+    }
+    if (cognitoDomain) {
+      new cdk.CfnOutput(this, "CognitoDomain", { value: cognitoDomain });
+    }
     new cdk.CfnOutput(this, "ApiUrl", { value: httpApi.apiEndpoint });
     new cdk.CfnOutput(this, "WebUrl", { value: `https://${webDistribution.distributionDomainName}` });
     new cdk.CfnOutput(this, "McpUrl", { value: `${httpApi.apiEndpoint}/mcp` });

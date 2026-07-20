@@ -19,7 +19,7 @@ export async function handler(
 ): Promise<APIGatewayProxyResultV2> {
   const tenantId = await resolveTenantId(event);
   if (!tenantId) {
-    return unauthorized("Missing or invalid X-Api-Key");
+    return unauthorized("Missing or invalid Authorization Bearer or X-Api-Key");
   }
 
   let contentType = "application/pdf";

@@ -32,7 +32,13 @@ export function badRequest(
 }
 
 export function unauthorized(message = "Unauthorized"): APIGatewayProxyResultV2 {
-  return structuredError(401, "UNAUTHORIZED", message, false, "Provide a valid X-Api-Key header");
+  return structuredError(
+    401,
+    "UNAUTHORIZED",
+    message,
+    false,
+    "Provide Authorization: Bearer <Cognito access token> or X-Api-Key",
+  );
 }
 
 export function notFound(message: string): APIGatewayProxyResultV2 {

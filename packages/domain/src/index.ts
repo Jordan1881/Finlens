@@ -5,6 +5,29 @@ export type StatementStatus =
   | "ready"
   | "failed";
 
+/** Isolation unit; `tenantId` on Statements/API keys equals `workspaceId`. */
+export interface WorkspaceRecord {
+  workspaceId: string;
+  name: string;
+  ownerSub: string;
+  createdAt: string;
+  /**
+   * Reserved for #23 quotas (uploads/day, asks/day, concurrent analyses).
+   * Not enforced in the workspace-identity phase.
+   */
+  quotas?: Record<string, number>;
+}
+
+export type WorkspaceMemberRole = "owner" | "member";
+
+/** Cognito user → Workspace membership (v1: one personal Workspace per user). */
+export interface WorkspaceMembership {
+  cognitoSub: string;
+  workspaceId: string;
+  role: WorkspaceMemberRole;
+  createdAt: string;
+}
+
 export interface FinancialSummary {
   currency: string;
   month: string | null;

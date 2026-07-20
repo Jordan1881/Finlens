@@ -10,7 +10,7 @@ Finlens is a remote MCP product for bank statement analysis on AWS. Upload a mon
 | REST / MCP API | https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com |
 | MCP endpoint | https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com/mcp |
 
-Auth uses header `X-Api-Key`. Keys are stored as SHA-256 hashes in the ApiKeysTable, mapped to a `tenantId` — mint one with `node scripts/create-api-key.mjs --table <ApiKeysTableName> --tenant <tenantId>`. In dev, the shared `finlens-dev-local-key` shortcut (stack output `DevApiKey`, tenant `dev`) also works. Cognito OAuth is wired for MCP but API key is the reliable path in Cursor today.
+Auth uses header `X-Api-Key` for MCP/agents, or `Authorization: Bearer` (Cognito access token) for the web control plane. API keys are stored as SHA-256 hashes in the ApiKeysTable, mapped to a Workspace `tenantId` — mint one with `node scripts/create-api-key.mjs --table <ApiKeysTableName> --tenant <tenantId>`. In dev, the shared `finlens-dev-local-key` shortcut (stack output `DevApiKey`, tenant `dev`) also works for API/MCP. The web SPA never embeds an API key; it uses Cognito Hosted UI + PKCE.
 
 ## Features
 
@@ -19,7 +19,7 @@ Auth uses header `X-Api-Key`. Keys are stored as SHA-256 hashes in the ApiKeysTa
 - REST API for create, list, get, upload, and **delete**
 - Remote **MCP** (Streamable HTTP) with four tools
 - Next.js dashboard (SnowUI-inspired layout)
-- Multi-tenant metadata in DynamoDB (`tenantId` from API key or Cognito JWT)
+- Multi-tenant metadata in DynamoDB (`tenantId` = Workspace id from API key or Cognito membership)
 
 ## Architecture
 
@@ -45,7 +45,7 @@ flowchart TB
 
   subgraph data["Data"]
     STMTS3["S3 — statements<br/>.pdf / .csv"]
-    DDB["DynamoDB<br/>statements + api keys"]
+    DDB["DynamoDB<br/>statements + api keys + workspaces"]
   end
 
   subgraph async["Async analysis"]
@@ -139,7 +139,7 @@ infra/           AWS CDK stack (`FinlensDevStack` / `FinlensProdStack`)
 
 ## REST API (v1)
 
-All routes require `X-Api-Key` in dev (or `Authorization: Bearer` Cognito JWT on MCP).
+All statement routes accept `Authorization: Bearer` (Cognito) or `X-Api-Key` (agents/MCP). MCP prefers the same hybrid resolution.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -226,14 +226,17 @@ npx cdk deploy FinlensDevStack -c opsAlertEmail=ops@example.com --profile finlen
 
 If `opsAlertEmail` is omitted, the ops SNS topic and alarm actions are still created; add a subscription later and confirm it in email.
 
-Web build env (injected by `deploy:dev`):
+Web build env (injected by `deploy:dev` — Cognito IDs only, no API key):
 
 ```bash
 NEXT_PUBLIC_FINLENS_API_URL=https://<api-id>.execute-api.eu-west-1.amazonaws.com
-NEXT_PUBLIC_FINLENS_API_KEY=finlens-dev-local-key
+NEXT_PUBLIC_COGNITO_USER_POOL_ID=eu-west-1_…
+NEXT_PUBLIC_COGNITO_CLIENT_ID=…
+NEXT_PUBLIC_COGNITO_DOMAIN=…
+NEXT_PUBLIC_COGNITO_REGION=eu-west-1
 ```
 
-Copy `apps/web/.env.production.example` for local static builds.
+Copy `apps/web/.env.production.example` for local static builds / `next dev`. Register Cognito callback URLs for `http://localhost:3000/auth/callback` and the CloudFront origin (see `docs/security/phase-workspace-identity.md`).
 
 ### Useful scripts
 
@@ -243,7 +246,7 @@ Copy `apps/web/.env.production.example` for local static builds.
 | `npm run cdk:synth` | Synthesize CloudFormation |
 | `npm run cdk:deploy:dev` | Build web + deploy `FinlensDevStack` |
 
-Stack outputs include `ApiUrl`, `WebUrl`, `McpUrl`, `StatementsBucketName`, `StatementsTableName`, and `DevApiKey`.
+Stack outputs include `ApiUrl`, `WebUrl`, `McpUrl`, `StatementsBucketName`, `StatementsTableName`, `WorkspacesTableName`, Cognito ids, and `DevApiKey`.
 
 ## License
 
