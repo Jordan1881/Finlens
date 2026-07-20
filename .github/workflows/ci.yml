@@ -27,9 +27,9 @@ jobs:
           node-version: "20"
           cache: npm
       - run: npm ci
-      # Fail on high or critical only (moderate/low reported but non-blocking).
+      # Fail on high/critical with narrow allowlist for CDK-bundled noise.
       # Policy documented in docs/security/ci-gate.md.
-      - run: npm audit --audit-level=high
+      - run: node scripts/ci-dependency-audit.mjs
 
   cdk-synth:
     name: CDK synth

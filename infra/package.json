@@ -11,7 +11,8 @@
     "deploy:prod": "node scripts/check-prod-prereqs.mjs && cdk deploy FinlensProdStack --require-approval never"
   },
   "dependencies": {
-    "aws-cdk-lib": "^2.200.0",
+    "aws-cdk-lib": "^2.261.0",
+    "brace-expansion": "^5.0.7",
     "constructs": "^10.4.2"
   },
   "devDependencies": {

@@ -5,7 +5,7 @@ CI (`.github/workflows/ci.yml`) runs three jobs on every pull request and on pus
 | Job | What it does | Fail policy |
 | --- | --- | --- |
 | `secret-scan` | [Gitleaks](https://github.com/gitleaks/gitleaks-action) scans the git history for hardcoded secrets | Any finding fails the job |
-| `dependency-audit` | `npm audit --audit-level=high` at the repo root after `npm ci` | **High** or **critical** advisories fail; moderate/low do not |
+| `dependency-audit` | `node scripts/ci-dependency-audit.mjs` after `npm ci` | **High** or **critical** advisories fail, except documented GHSA allowlist entries |
 | `cdk-synth` | Existing infra compile check | Synth errors fail (unchanged) |
 
 ## Secret scan failures
@@ -33,7 +33,20 @@ gitleaks detect --source . --verbose
 
 2. Read each high/critical advisory: affected package, fix version, and whether the path is reachable in Finlens (web app, API, CDK, transitive).
 3. Prefer `npm audit fix` when the fix is non-breaking. For major bumps, upgrade in a dedicated PR and re-run tests / `npm run cdk:synth`.
-4. Do **not** silence high/critical with `--audit-level=critical` or by deleting the job. If a finding is accepted temporarily, document residual risk in a security note or ADR and track remediation — the gate stays at `high`.
+4. Do **not** silence high/critical by deleting the job or lowering `--audit-level`. Temporary acceptances go in `scripts/ci-dependency-audit.mjs` **ALLOWLIST** (GHSA id + reason) and must be mentioned here.
+
+Local check (matches CI):
+
+```bash
+npm ci
+node scripts/ci-dependency-audit.mjs
+```
+
+### Current allowlist
+
+| GHSA | Package | Why allowed |
+|------|---------|-------------|
+| `GHSA-3jxr-9vmj-r5cp` | `brace-expansion` (bundled in `aws-cdk-lib`) | CDK ships it `inBundle`; npm overrides cannot replace it. Synth/deploy-only; revisit when CDK republishes ≥5.0.7 |
 
 Moderate and low findings still appear in `npm audit` output; they are informational until the fail level is tightened later.
 
