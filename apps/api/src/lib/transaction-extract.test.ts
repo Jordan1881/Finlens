@@ -48,6 +48,24 @@ describe("analysis prompt parse", () => {
     assert.deepEqual(result.transactions, []);
   });
 
+  it("repairs trailing commas and markdown fences", () => {
+    const result = parseAnalysisJson(`\`\`\`json
+{
+  "currency": "ILS",
+  "month": "2026-05",
+  "totalIncome": 10,
+  "totalExpenses": 3,
+  "netBalance": 7,
+  "topCategories": [{ "category": "food", "amount": 3, }],
+  "spendingInsights": ["ok",],
+  "transactions": [],
+}
+\`\`\``);
+    assert.equal(result.currency, "ILS");
+    assert.equal(result.totalIncome, 10);
+    assert.deepEqual(result.transactions, []);
+  });
+
   it("normalizeTransactions drops invalid rows", () => {
     assert.deepEqual(
       normalizeTransactions([
