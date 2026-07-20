@@ -12,7 +12,7 @@ const LIST_LIMIT = 20;
 export async function handler(
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyResultV2> {
-  const tenantId = resolveTenantId(event);
+  const tenantId = await resolveTenantId(event);
   if (!tenantId) {
     return unauthorized("Missing or invalid X-Api-Key");
   }

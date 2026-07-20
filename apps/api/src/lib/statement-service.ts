@@ -1,6 +1,11 @@
 import { DeleteObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DeleteCommand, DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DeleteCommand,
+  DynamoDBDocumentClient,
+  GetCommand,
+  QueryCommand,
+} from "@aws-sdk/lib-dynamodb";
 import type {
   DirectUploadResponse,
   ListStatementsResponse,
@@ -74,20 +79,14 @@ async function fetchStatementRecord(
   statementId: string,
 ): Promise<StatementRecord | null> {
   const result = await ddb.send(
-    new QueryCommand({
+    new GetCommand({
       TableName: tableName(),
-      IndexName: "byStatementId",
-      KeyConditionExpression: "statementId = :statementId",
-      ExpressionAttributeValues: { ":statementId": statementId },
-      Limit: 1,
+      Key: { tenantId, statementId },
     }),
   );
 
-  const record = result.Items?.[0] as StatementRecord | undefined;
-  if (!record || record.tenantId !== tenantId) {
-    return null;
-  }
-  return record;
+  const record = result.Item as StatementRecord | undefined;
+  return record ?? null;
 }
 
 export async function listStatements(tenantId: string): Promise<ListStatementsResponse> {

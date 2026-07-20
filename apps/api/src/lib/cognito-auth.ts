@@ -1,9 +1,8 @@
 import { CognitoJwtVerifier } from "aws-jwt-verify";
 
 let accessVerifier: ReturnType<typeof CognitoJwtVerifier.create> | null = null;
-let idVerifier: ReturnType<typeof CognitoJwtVerifier.create> | null = null;
 
-function getVerifiers() {
+function getAccessVerifier() {
   const userPoolId = process.env.COGNITO_USER_POOL_ID;
   const clientId = process.env.COGNITO_CLIENT_ID;
   if (!userPoolId || !clientId) {
@@ -18,32 +17,16 @@ function getVerifiers() {
     });
   }
 
-  if (!idVerifier) {
-    idVerifier = CognitoJwtVerifier.create({
-      userPoolId,
-      tokenUse: "id",
-      clientId,
-    });
-  }
-
-  return { accessVerifier, idVerifier };
+  return accessVerifier;
 }
 
 export async function verifyAccessToken(token: string): Promise<string | null> {
-  const { accessVerifier: access, idVerifier: id } = getVerifiers();
-
-  for (const verifier of [access, id]) {
-    try {
-      const payload = await verifier.verify(token);
-      if (typeof payload.sub === "string") {
-        return payload.sub;
-      }
-    } catch {
-      // try next token type
-    }
+  try {
+    const payload = await getAccessVerifier().verify(token);
+    return typeof payload.sub === "string" ? payload.sub : null;
+  } catch {
+    return null;
   }
-
-  return null;
 }
 
 export function getBearerToken(authHeader: string | undefined): string | null {

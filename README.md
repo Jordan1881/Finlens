@@ -10,7 +10,7 @@ Finlens is a remote MCP product for bank statement analysis on AWS. Upload a mon
 | REST / MCP API | https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com |
 | MCP endpoint | https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com/mcp |
 
-Dev auth uses header `X-Api-Key: finlens-dev-local-key` (stack output `DevApiKey`). Cognito OAuth is wired for MCP but API key is the reliable path in Cursor today.
+Auth uses header `X-Api-Key`. Keys are stored as SHA-256 hashes in the ApiKeysTable, mapped to a `tenantId` — mint one with `node scripts/create-api-key.mjs --table <ApiKeysTableName> --tenant <tenantId>`. In dev, the shared `finlens-dev-local-key` shortcut (stack output `DevApiKey`, tenant `dev`) also works. Cognito OAuth is wired for MCP but API key is the reliable path in Cursor today.
 
 ## Features
 
@@ -111,7 +111,7 @@ Icons from [awslabs/aws-icons-for-plantuml](https://github.com/awslabs/aws-icons
 | **Amazon API Gateway (HTTP API)** | Single HTTPS entry for REST, MCP, and OAuth routes |
 | **AWS Lambda** | REST handlers, MCP server, OAuth bridge, S3 trigger, Bedrock analysis |
 | **Amazon DynamoDB** | Statement records (status, summaries, insights) and API key hashes |
-| **AWS Step Functions** | Durable wrapper around the analyze Lambda |
+| **AWS Step Functions** | Wraps the analyze Lambda: retries transient Bedrock/Lambda errors with exponential backoff, and on unrecoverable failure marks the statement row `failed` in DynamoDB |
 | **Amazon Bedrock** | Claude model for PDF document + CSV text analysis |
 | **Amazon Cognito** | User pool + Google IdP for MCP OAuth (alongside dev API key) |
 
@@ -122,7 +122,7 @@ Icons from [awslabs/aws-icons-for-plantuml](https://github.com/awslabs/aws-icons
 1. Client uploads via `POST /v1/statements/upload` (base64) or presigned `POST /v1/statements`.
 2. File lands in S3 under `statements/{tenantId}/{statementId}.{pdf|csv}`.
 3. S3 `OBJECT_CREATED` invokes **OnS3Upload** Lambda → marks row `processing` → starts Step Functions.
-4. **AnalyzeStatement** Lambda reads the file, calls Bedrock, writes `financialSummary` + `spendingInsights`, sets status `ready` (or `failed`).
+4. **AnalyzeStatement** Lambda reads the file, calls Bedrock, writes `financialSummary` + `spendingInsights`, sets status `ready` (or `failed`). Step Functions retries transient errors (Bedrock throttling/timeouts, Lambda service errors) up to 3 times with exponential backoff; if the task still fails — including crashes or timeouts the Lambda can't catch itself — a catch step writes status `failed` + `errorMessage` to the row before the execution fails.
 5. Client polls `GET /v1/statements/{id}?detail=summary` or uses MCP `get_statement`.
 
 ## Monorepo layout

@@ -1,6 +1,6 @@
-import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
+import { ExecutionAlreadyExists, SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { S3Event, S3Handler } from "aws-lambda";
 
 const sfn = new SFNClient({});
@@ -27,17 +27,13 @@ export const handler: S3Handler = async (event: S3Event) => {
     const now = new Date().toISOString();
 
     const existing = await ddb.send(
-      new QueryCommand({
+      new GetCommand({
         TableName: tableName,
-        IndexName: "byStatementId",
-        KeyConditionExpression: "statementId = :statementId",
-        ExpressionAttributeValues: { ":statementId": statementId },
-        Limit: 1,
+        Key: { tenantId, statementId },
       }),
     );
 
-    const item = existing.Items?.[0];
-    if (!item || item.tenantId !== tenantId) {
+    if (!existing.Item) {
       console.warn("No matching statement record for", key);
       continue;
     }
@@ -55,11 +51,22 @@ export const handler: S3Handler = async (event: S3Event) => {
       }),
     );
 
-    await sfn.send(
-      new StartExecutionCommand({
-        stateMachineArn,
-        input: JSON.stringify({ tenantId, statementId, bucket, key }),
-      }),
-    );
+    try {
+      // Naming the execution after the statement makes duplicate S3 events a no-op:
+      // Step Functions rejects a second execution with the same name for 90 days.
+      await sfn.send(
+        new StartExecutionCommand({
+          stateMachineArn,
+          name: statementId,
+          input: JSON.stringify({ tenantId, statementId, bucket, key }),
+        }),
+      );
+    } catch (error) {
+      if (error instanceof ExecutionAlreadyExists) {
+        console.warn("Analysis already started for", statementId);
+        continue;
+      }
+      throw error;
+    }
   }
 };

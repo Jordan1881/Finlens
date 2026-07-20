@@ -3,10 +3,14 @@ import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as destinations from "aws-cdk-lib/aws-lambda-destinations";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
+import * as logs from "aws-cdk-lib/aws-logs";
+import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
 import * as s3n from "aws-cdk-lib/aws-s3-notifications";
@@ -28,6 +32,7 @@ export class FinlensStack extends cdk.Stack {
     const removalPolicy = stage === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY;
     const devApiKey = this.node.tryGetContext("devApiKey") as string;
     const bedrockModelId = this.node.tryGetContext("bedrockModelId") as string;
+    const bedrockModelIdCsv = this.node.tryGetContext("bedrockModelIdCsv") as string | undefined;
     const cognitoUserPoolId = this.node.tryGetContext("cognitoUserPoolId") as string | undefined;
     const cognitoClientId = this.node.tryGetContext("cognitoClientId") as string | undefined;
     const cognitoDomain = this.node.tryGetContext("cognitoDomain") as string | undefined;
@@ -45,6 +50,7 @@ export class FinlensStack extends cdk.Stack {
       partitionKey: { name: "keyHash", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: stage === "prod" },
     });
 
     const statementsTable = new dynamodb.Table(this, "StatementsTable", {
@@ -52,19 +58,17 @@ export class FinlensStack extends cdk.Stack {
       sortKey: { name: "statementId", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy,
-    });
-
-    statementsTable.addGlobalSecondaryIndex({
-      indexName: "byStatementId",
-      partitionKey: { name: "statementId", type: dynamodb.AttributeType.STRING },
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: stage === "prod" },
     });
 
     const repoRoot = path.join(__dirname, "../..");
     const lambdaEnv = {
       STATEMENTS_BUCKET: statementsBucket.bucketName,
       STATEMENTS_TABLE: statementsTable.tableName,
+      API_KEYS_TABLE: apiKeysTable.tableName,
       STAGE: stage,
       BEDROCK_MODEL_ID: bedrockModelId,
+      ...(bedrockModelIdCsv ? { BEDROCK_MODEL_ID_CSV: bedrockModelIdCsv } : {}),
       ...(stage === "dev" && devApiKey ? { DEV_API_KEY: devApiKey } : {}),
     };
 
@@ -75,6 +79,7 @@ export class FinlensStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
       memorySize: 256,
       environment: lambdaEnv,
+      logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
@@ -85,6 +90,7 @@ export class FinlensStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
       memorySize: 256,
       environment: lambdaEnv,
+      logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
@@ -95,6 +101,7 @@ export class FinlensStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
       memorySize: 256,
       environment: lambdaEnv,
+      logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
@@ -105,6 +112,7 @@ export class FinlensStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
       memorySize: 256,
       environment: lambdaEnv,
+      logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
@@ -115,6 +123,7 @@ export class FinlensStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
       environment: lambdaEnv,
+      logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
@@ -138,6 +147,7 @@ export class FinlensStack extends cdk.Stack {
         ...lambdaEnv,
         ...cognitoEnv,
       },
+      logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
@@ -151,6 +161,7 @@ export class FinlensStack extends cdk.Stack {
         STAGE: stage,
         ...cognitoEnv,
       },
+      logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
@@ -166,6 +177,7 @@ export class FinlensStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
       memorySize: 128,
       environment: oauthProxyEnv,
+      logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
@@ -176,6 +188,7 @@ export class FinlensStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
       memorySize: 128,
       environment: oauthProxyEnv,
+      logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
@@ -186,6 +199,7 @@ export class FinlensStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
       memorySize: 128,
       environment: oauthProxyEnv,
+      logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
@@ -199,6 +213,7 @@ export class FinlensStack extends cdk.Stack {
         STAGE: stage,
         ...cognitoEnv,
       },
+      logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
@@ -209,6 +224,7 @@ export class FinlensStack extends cdk.Stack {
       timeout: cdk.Duration.minutes(5),
       memorySize: 1024,
       environment: lambdaEnv,
+      logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
@@ -225,6 +241,12 @@ export class FinlensStack extends cdk.Stack {
     statementsBucket.grantPut(mcpServerFn);
     statementsBucket.grantDelete(deleteStatementFn);
     statementsBucket.grantDelete(mcpServerFn);
+    apiKeysTable.grantReadData(createStatementFn);
+    apiKeysTable.grantReadData(getStatementFn);
+    apiKeysTable.grantReadData(listStatementsFn);
+    apiKeysTable.grantReadData(deleteStatementFn);
+    apiKeysTable.grantReadData(uploadStatementDirectFn);
+    apiKeysTable.grantReadData(mcpServerFn);
 
     analyzeStatementFn.addToRolePolicy(
       new iam.PolicyStatement({
@@ -242,10 +264,65 @@ export class FinlensStack extends cdk.Stack {
       outputPath: "$.Payload",
     });
 
+    // LambdaInvoke already retries Lambda service errors (ServiceException, AWSLambdaException,
+    // SdkClientException, ClientExecutionTimeoutException) by default; this adds Bedrock
+    // transients surfaced through the Lambda, plus invoke throttling.
+    analyzeTask.addRetry({
+      errors: [
+        "ThrottlingException",
+        "ServiceUnavailableException",
+        "InternalServerException",
+        "ModelTimeoutException",
+        "Lambda.TooManyRequestsException",
+      ],
+      interval: cdk.Duration.seconds(2),
+      maxAttempts: 3,
+      backoffRate: 2,
+    });
+
+    const markStatementFailed = new tasks.DynamoUpdateItem(this, "MarkStatementFailed", {
+      table: statementsTable,
+      key: {
+        tenantId: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.tenantId")),
+        statementId: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.statementId")),
+      },
+      updateExpression:
+        "SET #status = :status, updatedAt = :updatedAt, errorMessage = :errorMessage",
+      expressionAttributeNames: { "#status": "status" },
+      expressionAttributeValues: {
+        ":status": tasks.DynamoAttributeValue.fromString("failed"),
+        ":updatedAt": tasks.DynamoAttributeValue.fromString(
+          sfn.JsonPath.stringAt("$$.State.EnteredTime"),
+        ),
+        ":errorMessage": tasks.DynamoAttributeValue.fromString(
+          sfn.JsonPath.stringAt("$.error.Cause"),
+        ),
+      },
+      resultPath: sfn.JsonPath.DISCARD,
+    });
+
+    const analysisFailed = new sfn.Fail(this, "AnalysisFailed", {
+      error: "AnalysisFailed",
+      cause: "AnalyzeStatement failed after retries; statement row marked as failed",
+    });
+
+    analyzeTask.addCatch(markStatementFailed.next(analysisFailed), {
+      errors: ["States.ALL"],
+      resultPath: "$.error",
+    });
+
     const stateMachine = new sfn.StateMachine(this, "StatementPipeline", {
       stateMachineName: `finlens-${stage}-statement-pipeline`,
       definitionBody: sfn.DefinitionBody.fromChainable(analyzeTask),
-      timeout: cdk.Duration.minutes(10),
+      // Leaves headroom for up to 3 analyze attempts (5 min Lambda timeout each) plus backoff
+      timeout: cdk.Duration.minutes(20),
+    });
+
+    // S3 invokes OnS3Upload async: after two failed retries the event is dropped,
+    // so failures land here instead of silently stranding statements.
+    const onS3UploadDlq = new sqs.Queue(this, "OnS3UploadDlq", {
+      retentionPeriod: cdk.Duration.days(14),
+      enforceSSL: true,
     });
 
     const onS3UploadFn = new NodejsFunction(this, "OnS3UploadFn", {
@@ -258,11 +335,31 @@ export class FinlensStack extends cdk.Stack {
         ...lambdaEnv,
         STATE_MACHINE_ARN: stateMachine.stateMachineArn,
       },
+      onFailure: new destinations.SqsDestination(onS3UploadDlq),
+      logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
     });
 
     statementsTable.grantReadWriteData(onS3UploadFn);
     stateMachine.grantStartExecution(onS3UploadFn);
+
+    new cloudwatch.Alarm(this, "PipelineFailedAlarm", {
+      alarmDescription: "Statement analysis executions are failing",
+      metric: stateMachine.metricFailed({ period: cdk.Duration.minutes(5) }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    new cloudwatch.Alarm(this, "OnS3UploadDlqAlarm", {
+      alarmDescription: "S3 upload events failed processing and landed in the DLQ",
+      metric: onS3UploadDlq.metricApproximateNumberOfMessagesVisible({
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
 
     statementsBucket.addEventNotification(
       s3.EventType.OBJECT_CREATED,
@@ -274,6 +371,37 @@ export class FinlensStack extends cdk.Stack {
       new s3n.LambdaDestination(onS3UploadFn),
       { prefix: "statements/", suffix: ".csv" },
     );
+
+    const webBucket = new s3.Bucket(this, "WebBucket", {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      removalPolicy,
+      autoDeleteObjects: stage !== "prod",
+    });
+
+    const webDistribution = new cloudfront.Distribution(this, "WebDistribution", {
+      defaultBehavior: {
+        origin: origins.S3BucketOrigin.withOriginAccessControl(webBucket),
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
+      },
+      defaultRootObject: "index.html",
+      errorResponses: [
+        {
+          httpStatus: 403,
+          responseHttpStatus: 200,
+          responsePagePath: "/index.html",
+          ttl: cdk.Duration.seconds(0),
+        },
+        {
+          httpStatus: 404,
+          responseHttpStatus: 200,
+          responsePagePath: "/index.html",
+          ttl: cdk.Duration.seconds(0),
+        },
+      ],
+    });
 
     const httpApi = new apigwv2.HttpApi(this, "HttpApi", {
       apiName: `finlens-${stage}`,
@@ -293,7 +421,8 @@ export class FinlensStack extends cdk.Stack {
           apigwv2.CorsHttpMethod.DELETE,
           apigwv2.CorsHttpMethod.OPTIONS,
         ],
-        allowOrigins: ["*"],
+        allowOrigins:
+          stage === "prod" ? [`https://${webDistribution.distributionDomainName}`] : ["*"],
       },
     });
 
@@ -378,36 +507,6 @@ export class FinlensStack extends cdk.Stack {
     oauthProxyFn.addEnvironment("API_PUBLIC_URL", httpApi.apiEndpoint);
     oauthCallbackFn.addEnvironment("API_PUBLIC_URL", httpApi.apiEndpoint);
     oauthTokenFn.addEnvironment("API_PUBLIC_URL", httpApi.apiEndpoint);
-
-    const webBucket = new s3.Bucket(this, "WebBucket", {
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      enforceSSL: true,
-      removalPolicy,
-      autoDeleteObjects: stage !== "prod",
-    });
-
-    const webDistribution = new cloudfront.Distribution(this, "WebDistribution", {
-      defaultBehavior: {
-        origin: origins.S3BucketOrigin.withOriginAccessControl(webBucket),
-        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-      },
-      defaultRootObject: "index.html",
-      errorResponses: [
-        {
-          httpStatus: 403,
-          responseHttpStatus: 200,
-          responsePagePath: "/index.html",
-          ttl: cdk.Duration.seconds(0),
-        },
-        {
-          httpStatus: 404,
-          responseHttpStatus: 200,
-          responsePagePath: "/index.html",
-          ttl: cdk.Duration.seconds(0),
-        },
-      ],
-    });
 
     const webOutDir = path.join(repoRoot, "apps/web/out");
     if (fs.existsSync(webOutDir)) {

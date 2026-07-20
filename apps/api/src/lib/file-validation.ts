@@ -1,4 +1,6 @@
-export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+// API Gateway caps request bodies at 10 MB and base64 inflates by ~33%,
+// so ~7 MB of file bytes is the most that can actually arrive on the direct upload path.
+export const MAX_UPLOAD_BYTES = 7 * 1024 * 1024;
 export const MAX_BEDROCK_BYTES = Math.floor(4.5 * 1024 * 1024);
 export const MAX_CSV_TEXT_CHARS = 120_000;
 

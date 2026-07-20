@@ -15,12 +15,19 @@ import type { StatementFileType } from "./file-validation";
 
 const bedrock = new BedrockRuntimeClient({});
 
-async function converse(content: ContentBlock[]): Promise<AnalysisResult> {
-  const modelId = process.env.BEDROCK_MODEL_ID;
-  if (!modelId) {
+function modelIdFor(fileType: StatementFileType): string {
+  const baseModelId = process.env.BEDROCK_MODEL_ID;
+  if (!baseModelId) {
     throw new Error("BEDROCK_MODEL_ID is not configured");
   }
+  // CSVs are plain-text extraction; a smaller model handles them at a fraction of the cost
+  if (fileType === "csv" && process.env.BEDROCK_MODEL_ID_CSV) {
+    return process.env.BEDROCK_MODEL_ID_CSV;
+  }
+  return baseModelId;
+}
 
+async function converse(content: ContentBlock[], modelId: string): Promise<AnalysisResult> {
   const response = await bedrock.send(
     new ConverseCommand({
       modelId,
@@ -42,16 +49,19 @@ async function converse(content: ContentBlock[]): Promise<AnalysisResult> {
 }
 
 export async function analyzeStatementPdf(pdfBytes: Uint8Array): Promise<AnalysisResult> {
-  return converse([
-    {
-      document: {
-        format: "pdf",
-        name: "bank-statement",
-        source: { bytes: pdfBytes },
+  return converse(
+    [
+      {
+        document: {
+          format: "pdf",
+          name: "bank-statement",
+          source: { bytes: pdfBytes },
+        },
       },
-    },
-    { text: ANALYSIS_USER_PROMPT },
-  ]);
+      { text: ANALYSIS_USER_PROMPT },
+    ],
+    modelIdFor("pdf"),
+  );
 }
 
 export async function analyzeStatementCsv(csvBytes: Uint8Array): Promise<AnalysisResult> {
@@ -60,9 +70,10 @@ export async function analyzeStatementCsv(csvBytes: Uint8Array): Promise<Analysi
     text = `${text.slice(0, MAX_CSV_TEXT_CHARS)}\n...[truncated]`;
   }
 
-  return converse([
-    { text: `${ANALYSIS_CSV_PREFIX}${text}\n\n${ANALYSIS_USER_PROMPT}` },
-  ]);
+  return converse(
+    [{ text: `${ANALYSIS_CSV_PREFIX}${text}\n\n${ANALYSIS_USER_PROMPT}` }],
+    modelIdFor("csv"),
+  );
 }
 
 export async function analyzeStatementFile(

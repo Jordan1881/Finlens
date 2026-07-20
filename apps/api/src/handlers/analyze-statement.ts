@@ -19,27 +19,6 @@ function fileTypeFromKey(key: string): StatementFileType {
   return key.toLowerCase().endsWith(".csv") ? "csv" : "pdf";
 }
 
-async function markFailed(tenantId: string, statementId: string, message: string) {
-  const tableName = process.env.STATEMENTS_TABLE;
-  if (!tableName) {
-    return;
-  }
-
-  await ddb.send(
-    new UpdateCommand({
-      TableName: tableName,
-      Key: { tenantId, statementId },
-      UpdateExpression: "SET #status = :status, updatedAt = :updatedAt, errorMessage = :errorMessage",
-      ExpressionAttributeNames: { "#status": "status" },
-      ExpressionAttributeValues: {
-        ":status": "failed",
-        ":updatedAt": new Date().toISOString(),
-        ":errorMessage": message.slice(0, 500),
-      },
-    }),
-  );
-}
-
 export async function handler(input: AnalyzeInput): Promise<{ ok: boolean }> {
   const tableName = process.env.STATEMENTS_TABLE;
   if (!tableName) {
@@ -96,9 +75,10 @@ export async function handler(input: AnalyzeInput): Promise<{ ok: boolean }> {
 
     return { ok: true };
   } catch (error) {
+    // The Step Functions catch path owns marking the row failed — rethrow so
+    // retryable errors stay retryable instead of flipping the row to failed early.
     const message = error instanceof Error ? error.message : "Analysis failed";
     console.error("Analyze failed", { tenantId, statementId, message });
-    await markFailed(tenantId, statementId, message);
     throw error;
   }
 }

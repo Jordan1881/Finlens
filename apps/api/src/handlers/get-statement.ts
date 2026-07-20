@@ -1,5 +1,5 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 import type {
   FinancialSummary,
@@ -46,7 +46,7 @@ function toSummaryView(record: StatementRecord): StatementSummaryView {
 export async function handler(
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyResultV2> {
-  const tenantId = resolveTenantId(event);
+  const tenantId = await resolveTenantId(event);
   if (!tenantId) {
     return unauthorized("Missing or invalid X-Api-Key");
   }
@@ -70,17 +70,14 @@ export async function handler(
   }
 
   const result = await ddb.send(
-    new QueryCommand({
+    new GetCommand({
       TableName: tableName,
-      IndexName: "byStatementId",
-      KeyConditionExpression: "statementId = :statementId",
-      ExpressionAttributeValues: { ":statementId": statementId },
-      Limit: 1,
+      Key: { tenantId, statementId },
     }),
   );
 
-  const record = result.Items?.[0] as StatementRecord | undefined;
-  if (!record || record.tenantId !== tenantId) {
+  const record = result.Item as StatementRecord | undefined;
+  if (!record) {
     return notFound("Statement not found");
   }
 
