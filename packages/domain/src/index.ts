@@ -130,3 +130,45 @@ export interface StructuredError {
   retryable: boolean;
   nextStep: string;
 }
+
+export type ApiKeyStatus = "active" | "revoked";
+
+/** Stored ApiKeysTable row — plaintext secret is never persisted. */
+export interface ApiKeyRecord {
+  keyHash: string;
+  keyId: string;
+  tenantId: string;
+  createdAt: string;
+  status: ApiKeyStatus;
+  /** Short display prefix (e.g. flk_xxxx); not secret. */
+  prefix: string;
+}
+
+/** List/mint metadata returned to clients (no hash, no secret). */
+export interface ApiKeyMetadata {
+  keyId: string;
+  tenantId: string;
+  createdAt: string;
+  status: ApiKeyStatus;
+  prefix: string;
+}
+
+export interface MintApiKeyResponse {
+  keyId: string;
+  tenantId: string;
+  createdAt: string;
+  status: ApiKeyStatus;
+  prefix: string;
+  /** Plaintext secret — returned once at mint time only. */
+  apiKey: string;
+}
+
+export interface ListApiKeysResponse {
+  keys: ApiKeyMetadata[];
+  count: number;
+}
+
+export interface RevokeApiKeyResponse {
+  keyId: string;
+  revoked: true;
+}

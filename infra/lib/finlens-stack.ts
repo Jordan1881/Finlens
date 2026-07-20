@@ -85,6 +85,12 @@ export class FinlensStack extends cdk.Stack {
       removalPolicy,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: stage === "prod" },
     });
+    apiKeysTable.addGlobalSecondaryIndex({
+      indexName: "byTenant",
+      partitionKey: { name: "tenantId", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "keyId", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
 
     // Single-table Workspace + membership (USER#sub / MEMBERSHIP, WORKSPACE#id / META).
     // TTL on expiresAt cleans daily quota counter rows (QUOTA#uploads|asks#YYYY-MM-DD); META/membership omit it.
@@ -179,6 +185,17 @@ export class FinlensStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
+      environment: lambdaEnv,
+      logRetention: logs.RetentionDays.ONE_MONTH,
+      bundling: { minify: true, sourceMap: true, target: "node20" },
+    });
+
+    const apiKeysFn = new NodejsFunction(this, "ApiKeysFn", {
+      entry: path.join(repoRoot, "apps/api/src/handlers/api-keys.ts"),
+      handler: "handler",
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 256,
       environment: lambdaEnv,
       logRetention: logs.RetentionDays.ONE_MONTH,
       bundling: { minify: true, sourceMap: true, target: "node20" },
@@ -296,12 +313,14 @@ export class FinlensStack extends cdk.Stack {
     apiKeysTable.grantReadData(deleteStatementFn);
     apiKeysTable.grantReadData(uploadStatementDirectFn);
     apiKeysTable.grantReadData(mcpServerFn);
+    apiKeysTable.grantReadWriteData(apiKeysFn);
     workspacesTable.grantReadWriteData(createStatementFn);
     workspacesTable.grantReadWriteData(getStatementFn);
     workspacesTable.grantReadWriteData(listStatementsFn);
     workspacesTable.grantReadWriteData(deleteStatementFn);
     workspacesTable.grantReadWriteData(uploadStatementDirectFn);
     workspacesTable.grantReadWriteData(mcpServerFn);
+    workspacesTable.grantReadWriteData(apiKeysFn);
 
     analyzeStatementFn.addToRolePolicy(
       new iam.PolicyStatement({
@@ -525,6 +544,18 @@ export class FinlensStack extends cdk.Stack {
         "DeleteStatementIntegration",
         deleteStatementFn,
       ),
+    });
+
+    httpApi.addRoutes({
+      path: "/v1/api-keys",
+      methods: [apigwv2.HttpMethod.POST, apigwv2.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration("ApiKeysIntegration", apiKeysFn),
+    });
+
+    httpApi.addRoutes({
+      path: "/v1/api-keys/{keyId}",
+      methods: [apigwv2.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration("ApiKeysDeleteIntegration", apiKeysFn),
     });
 
     httpApi.addRoutes({

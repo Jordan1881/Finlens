@@ -11,7 +11,7 @@ import {
 
 const POLL_MS = 15_000;
 
-type Section = "dashboard" | "statements" | "insights";
+type Section = "dashboard" | "statements" | "insights" | "api-keys";
 
 type StatementRow = {
   statementId: string;
@@ -19,6 +19,18 @@ type StatementRow = {
   createdAt: string;
   month?: string | null;
   sourceFormat?: "pdf" | "csv";
+};
+
+type ApiKeyRow = {
+  keyId: string;
+  tenantId: string;
+  createdAt: string;
+  status: "active" | "revoked";
+  prefix: string;
+};
+
+type MintApiKeyResult = ApiKeyRow & {
+  apiKey: string;
 };
 
 type StatementDetail = {
@@ -82,6 +94,17 @@ function IconInsights() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
       <path
         d="M12 2a7 7 0 0 0-4 12.74V18a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-3.26A7 7 0 0 0 12 2Zm0 4a3 3 0 1 1 0 6 3 3 0 0 1 0-6Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+function IconKeys() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M7 14a5 5 0 1 1 4.9-6H21v3h-2v2h-2v2h-3.1A5 5 0 0 1 7 14Zm0-2a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"
         fill="currentColor"
       />
     </svg>
@@ -233,6 +256,8 @@ export default function HomePage() {
   const [selected, setSelected] = useState<StatementDetail | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [insightSummaries, setInsightSummaries] = useState<StatementDetail[]>([]);
+  const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([]);
+  const [mintedSecret, setMintedSecret] = useState<MintApiKeyResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [dragging, setDragging] = useState(false);
@@ -246,6 +271,11 @@ export default function HomePage() {
   const load = useCallback(async () => {
     const data = await api<{ statements: StatementRow[] }>("/v1/statements");
     setStatements(data.statements ?? []);
+  }, []);
+
+  const loadApiKeys = useCallback(async () => {
+    const data = await api<{ keys: ApiKeyRow[] }>("/v1/api-keys");
+    setApiKeys(data.keys ?? []);
   }, []);
 
   const refreshAll = useCallback(async () => {
@@ -276,6 +306,13 @@ export default function HomePage() {
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setInitialLoading(false));
   }, [authReady, authed, load]);
+
+  useEffect(() => {
+    if (!authReady || !authed || section !== "api-keys") {
+      return;
+    }
+    void loadApiKeys().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, [authReady, authed, section, loadApiKeys]);
 
   useEffect(() => {
     if (!authed) {
@@ -432,6 +469,53 @@ export default function HomePage() {
     }
   }
 
+  async function onMintApiKey() {
+    setBusy(true);
+    setError(null);
+    try {
+      const minted = await api<MintApiKeyResult>("/v1/api-keys", { method: "POST" });
+      setMintedSecret(minted);
+      await loadApiKeys();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRevokeApiKey(keyId: string) {
+    const label = keyId.slice(0, 12);
+    if (
+      !window.confirm(
+        `Revoke API key ${label}…? Agents using this key will fail immediately.`,
+      )
+    ) {
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/v1/api-keys/${keyId}`, { method: "DELETE" });
+      if (mintedSecret?.keyId === keyId) {
+        setMintedSecret(null);
+      }
+      await loadApiKeys();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copySecret(value: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      setError("Could not copy to clipboard — select the key and copy manually.");
+    }
+  }
+
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragging(false);
@@ -554,14 +638,18 @@ export default function HomePage() {
       ? "Dashboard"
       : section === "statements"
         ? "Statements"
-        : "Insights";
+        : section === "insights"
+          ? "Insights"
+          : "API keys";
 
   const sectionSubtitle =
     section === "dashboard"
       ? "Overview of your uploaded statements and spending insights."
       : section === "statements"
         ? "Browse uploads, open summaries, and track processing status."
-        : "Highlights from analyzed statements.";
+        : section === "insights"
+          ? "Highlights from analyzed statements."
+          : "Mint keys for MCP and agents. The secret is shown once; only a hash is stored.";
 
   if (!authReady) {
     return (
@@ -648,6 +736,14 @@ export default function HomePage() {
             >
               <IconInsights />
               Insights
+            </button>
+            <button
+              type="button"
+              className={`nav-item${section === "api-keys" ? " active" : ""}`}
+              onClick={() => setSection("api-keys")}
+            >
+              <IconKeys />
+              API keys
             </button>
           </nav>
         </div>
@@ -899,6 +995,109 @@ export default function HomePage() {
                   </div>
                 </div>
               ))}
+            </section>
+          )}
+
+          {section === "api-keys" && (
+            <section className="api-keys-layout">
+              <div className="panel">
+                <div className="panel-head">
+                  <h3>Mint key</h3>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={busy}
+                    onClick={() => void onMintApiKey()}
+                  >
+                    {busy ? "Working…" : "Mint API key"}
+                  </button>
+                </div>
+                <div className="panel-body">
+                  <p className="api-keys-help">
+                    Use the secret as <code>X-Api-Key</code> for MCP and agents. It is scoped to
+                    your Workspace and cannot be recovered after you leave this page.
+                  </p>
+                  {mintedSecret && (
+                    <div className="secret-reveal">
+                      <strong>Copy this key now</strong>
+                      <code className="secret-value">{mintedSecret.apiKey}</code>
+                      <div className="secret-actions">
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          onClick={() => void copySecret(mintedSecret.apiKey)}
+                        >
+                          Copy
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-ghost"
+                          onClick={() => setMintedSecret(null)}
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="panel">
+                <div className="panel-head">
+                  <h3>Workspace keys</h3>
+                  <span className="panel-meta">{apiKeys.length} keys</span>
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Prefix</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {apiKeys.length === 0 && (
+                        <tr>
+                          <td colSpan={4}>
+                            <div className="empty-state">
+                              No API keys yet — mint one for Cursor MCP or agent clients.
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      {apiKeys.map((key) => (
+                        <tr key={key.keyId}>
+                          <td>
+                            <code>
+                              {key.prefix}…
+                            </code>
+                          </td>
+                          <td>
+                            <span className={`status-pill status-${key.status === "active" ? "ready" : "failed"}`}>
+                              {key.status}
+                            </span>
+                          </td>
+                          <td>{new Date(key.createdAt).toLocaleString()}</td>
+                          <td className="row-actions">
+                            {key.status === "active" && (
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-danger"
+                                disabled={busy}
+                                onClick={() => void onRevokeApiKey(key.keyId)}
+                              >
+                                Revoke
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </section>
           )}
         </main>

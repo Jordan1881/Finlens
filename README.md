@@ -10,7 +10,7 @@ Finlens is a remote MCP product for bank statement analysis on AWS. Upload a mon
 | REST / MCP API | https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com |
 | MCP endpoint | https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com/mcp |
 
-Auth uses header `X-Api-Key` for MCP/agents, or `Authorization: Bearer` (Cognito access token) for the web control plane. API keys are stored as SHA-256 hashes in the ApiKeysTable, mapped to a Workspace `tenantId` — mint one with `node scripts/create-api-key.mjs --table <ApiKeysTableName> --tenant <tenantId>`. In dev, the shared `finlens-dev-local-key` shortcut (stack output `DevApiKey`, tenant `dev`) also works for API/MCP. The web SPA never embeds an API key; it uses Cognito Hosted UI + PKCE.
+Auth uses header `X-Api-Key` for MCP/agents, or `Authorization: Bearer` (Cognito access token) for the web control plane. API keys are stored as SHA-256 hashes in the ApiKeysTable, mapped to a Workspace `tenantId`. Workspace owners mint/revoke keys in the web UI (**API keys**) or via `POST`/`GET`/`DELETE /v1/api-keys` with Cognito Bearer — plaintext is shown once at mint. Operators can still use `node scripts/create-api-key.mjs --table <ApiKeysTableName> --tenant <tenantId>`. In dev, the shared `finlens-dev-local-key` shortcut (stack output `DevApiKey`, tenant `dev`) also works for API/MCP. The web SPA never embeds an API key; it uses Cognito Hosted UI + PKCE.
 
 ## Features
 
@@ -139,7 +139,7 @@ infra/           AWS CDK stack (`FinlensDevStack` / `FinlensProdStack`)
 
 ## REST API (v1)
 
-All statement routes accept `Authorization: Bearer` (Cognito) or `X-Api-Key` (agents/MCP). MCP prefers the same hybrid resolution.
+All statement routes accept `Authorization: Bearer` (Cognito) or `X-Api-Key` (agents/MCP). MCP prefers the same hybrid resolution. API key mint/list/revoke require Cognito Bearer (Workspace owner) only.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -148,12 +148,20 @@ All statement routes accept `Authorization: Bearer` (Cognito) or `X-Api-Key` (ag
 | `GET` | `/v1/statements` | List recent statements |
 | `GET` | `/v1/statements/{id}?detail=summary\|full` | Get status / analysis |
 | `DELETE` | `/v1/statements/{id}` | Delete statement + S3 object |
+| `POST` | `/v1/api-keys` | Mint key (Cognito; plaintext once) |
+| `GET` | `/v1/api-keys` | List key metadata (Cognito) |
+| `DELETE` | `/v1/api-keys/{keyId}` | Revoke key (Cognito) |
 
 ### Example
 
 ```bash
 export API_URL=https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com
 export API_KEY=finlens-dev-local-key
+
+# Mint a Workspace key (Cognito access token from web login)
+curl -s -X POST "$API_URL/v1/api-keys" \
+  -H "Authorization: Bearer $COGNITO_ACCESS_TOKEN" | jq
+# → save .apiKey now; list/revoke never return it again
 
 # List
 curl -s "$API_URL/v1/statements" -H "X-Api-Key: $API_KEY" | jq

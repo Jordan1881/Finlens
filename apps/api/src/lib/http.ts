@@ -41,8 +41,21 @@ export function unauthorized(message = "Unauthorized"): APIGatewayProxyResultV2 
   );
 }
 
-export function notFound(message: string): APIGatewayProxyResultV2 {
-  return structuredError(404, "NOT_FOUND", message, false, "Check the statementId or upload a new statement");
+export function forbidden(message = "Forbidden"): APIGatewayProxyResultV2 {
+  return structuredError(
+    403,
+    "FORBIDDEN",
+    message,
+    false,
+    "Sign in as a Workspace owner",
+  );
+}
+
+export function notFound(
+  message: string,
+  nextStep = "Check the statementId or upload a new statement",
+): APIGatewayProxyResultV2 {
+  return structuredError(404, "NOT_FOUND", message, false, nextStep);
 }
 
 /** Agent-readable over-quota denial (issue #23). */

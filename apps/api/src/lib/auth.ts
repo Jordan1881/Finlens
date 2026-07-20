@@ -1,13 +1,25 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
-import { hashApiKey, timingSafeStringEqual } from "./api-key";
+import type { WorkspaceMemberRole } from "@finlens/domain";
+import { timingSafeStringEqual } from "./api-key";
+import { resolveTenantIdForApiKey } from "./api-key-service";
 import { getBearerToken, verifyAccessToken } from "./cognito-auth";
-import { resolveOrCreatePersonalWorkspace } from "./workspace-service";
+import {
+  getMembership,
+  resolveOrCreatePersonalWorkspace,
+  resolveWorkspaceSeamDeps,
+} from "./workspace-service";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
-/** Resolve Workspace id (`tenantId`) from API key only. */
+export type BearerWorkspaceContext = {
+  tenantId: string;
+  cognitoSub: string;
+  role: WorkspaceMemberRole;
+};
+
+/** Resolve Workspace id (`tenantId`) from API key only (timing-safe DEV shortcut + hashed keys). */
 export async function resolveTenantIdFromApiKey(
   event: APIGatewayProxyEventV2,
 ): Promise<string | null> {
@@ -21,21 +33,11 @@ export async function resolveTenantIdFromApiKey(
     return "dev";
   }
 
-  const tableName = process.env.API_KEYS_TABLE;
-  if (!tableName) {
+  if (!process.env.API_KEYS_TABLE) {
     return null;
   }
 
-  const keyHash = hashApiKey(apiKey);
-  const result = await ddb.send(
-    new GetCommand({
-      TableName: tableName,
-      Key: { keyHash },
-    }),
-  );
-
-  const tenantId = result.Item?.tenantId;
-  return typeof tenantId === "string" && tenantId.length > 0 ? tenantId : null;
+  return resolveTenantIdForApiKey(apiKey);
 }
 
 /**
@@ -45,6 +47,17 @@ export async function resolveTenantIdFromApiKey(
 export async function resolveTenantIdFromBearer(
   event: APIGatewayProxyEventV2,
 ): Promise<string | null> {
+  const ctx = await resolveBearerWorkspaceContext(event);
+  return ctx?.tenantId ?? null;
+}
+
+/**
+ * Cognito Bearer → Workspace context (for owner-gated control-plane ops like API keys).
+ * Does not fall back to API-key auth.
+ */
+export async function resolveBearerWorkspaceContext(
+  event: APIGatewayProxyEventV2,
+): Promise<BearerWorkspaceContext | null> {
   const authHeader = event.headers.authorization ?? event.headers.Authorization;
   const token = getBearerToken(authHeader);
   if (!token) {
@@ -57,10 +70,33 @@ export async function resolveTenantIdFromBearer(
   }
 
   try {
-    return await resolveOrCreatePersonalWorkspace(cognitoSub);
+    const tenantId = await resolveOrCreatePersonalWorkspace(cognitoSub);
+    const membership = await getMembership(
+      resolveWorkspaceSeamDeps({ ddb }),
+      cognitoSub,
+    );
+    if (!membership || membership.workspaceId !== tenantId) {
+      return null;
+    }
+    return {
+      tenantId,
+      cognitoSub,
+      role: membership.role,
+    };
   } catch {
     return null;
   }
+}
+
+/** Bearer Cognito + Workspace owner role (API key mint/list/revoke). */
+export async function resolveWorkspaceOwnerFromBearer(
+  event: APIGatewayProxyEventV2,
+): Promise<BearerWorkspaceContext | null> {
+  const ctx = await resolveBearerWorkspaceContext(event);
+  if (!ctx || ctx.role !== "owner") {
+    return null;
+  }
+  return ctx;
 }
 
 /**

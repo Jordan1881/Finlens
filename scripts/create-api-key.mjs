@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Mint an API key for a tenant and store its SHA-256 hash in the ApiKeysTable.
 // The plaintext key is printed once and never stored.
+// Prefer the web UI or POST /v1/api-keys (Cognito Bearer) when available.
 //
 // Usage:
 //   node scripts/create-api-key.mjs --table <ApiKeysTableName> --tenant <tenantId> [--region eu-west-1]
@@ -9,7 +10,7 @@
 //   aws cloudformation describe-stacks --stack-name FinlensDevStack \
 //     --query "Stacks[0].Outputs[?OutputKey=='ApiKeysTableName'].OutputValue" --output text
 
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
 
 function arg(name) {
@@ -28,6 +29,9 @@ if (!table || !tenantId) {
 
 const apiKey = `flk_${randomBytes(24).toString("base64url")}`;
 const keyHash = createHash("sha256").update(apiKey).digest("hex");
+const keyId = `key_${randomUUID().replace(/-/g, "")}`;
+const createdAt = new Date().toISOString();
+const prefix = apiKey.slice(0, 12);
 
 const ddb = new DynamoDBClient({ region });
 await ddb.send(
@@ -35,13 +39,17 @@ await ddb.send(
     TableName: table,
     Item: {
       keyHash: { S: keyHash },
+      keyId: { S: keyId },
       tenantId: { S: tenantId },
-      createdAt: { S: new Date().toISOString() },
+      createdAt: { S: createdAt },
+      status: { S: "active" },
+      prefix: { S: prefix },
     },
     ConditionExpression: "attribute_not_exists(keyHash)",
   }),
 );
 
 console.log(`Tenant:  ${tenantId}`);
+console.log(`Key id:  ${keyId}`);
 console.log(`API key: ${apiKey}`);
 console.log("Store it now — the plaintext is not recoverable from the table.");

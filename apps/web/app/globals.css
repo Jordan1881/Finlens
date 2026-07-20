@@ -833,3 +833,51 @@ tbody tr.row-selected {
   color: #fff;
   font-weight: 700;
 }
+
+.api-keys-layout {
+  display: grid;
+  gap: 1rem;
+}
+
+.api-keys-help {
+  margin: 0 0 1rem;
+  color: var(--text-secondary);
+  max-width: 52ch;
+}
+
+.api-keys-help code {
+  font-size: 0.85em;
+  background: var(--bg);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+}
+
+.secret-reveal {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  background: var(--warning-soft);
+  border: 1px solid #ffe58f;
+  border-radius: var(--radius);
+}
+
+.secret-reveal strong {
+  font-size: 0.9rem;
+}
+
+.secret-value {
+  display: block;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85rem;
+  padding: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.secret-actions {
+  display: flex;
+  gap: 0.5rem;
+}
