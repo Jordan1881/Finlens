@@ -216,16 +216,18 @@ h4,
   width: 42px;
   height: 42px;
   border-radius: 14px;
-  background: linear-gradient(145deg, #0d7a5f 0%, #146b78 55%, #1a5c4a 100%);
-  display: grid;
+  display: inline-grid;
   place-items: center;
-  color: #f4faf8;
-  font-family: var(--font-display);
-  font-weight: 700;
-  font-size: 1.05rem;
-  letter-spacing: -0.02em;
-  box-shadow: 0 4px 14px rgba(13, 122, 95, 0.28);
   flex-shrink: 0;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(13, 122, 95, 0.28);
+  line-height: 0;
+}
+
+.brand-mark-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .brand h1 {
@@ -423,15 +425,11 @@ h4,
   width: 38px;
   height: 38px;
   border-radius: var(--radius-sm);
-  background: linear-gradient(145deg, #0d7a5f, #2a6f8a);
-  color: #f4faf8;
-  display: grid;
+  display: inline-grid;
   place-items: center;
-  font-size: 0.76rem;
-  font-weight: 650;
-  font-family: var(--font-display);
-  letter-spacing: 0.02em;
   box-shadow: 0 2px 8px rgba(13, 122, 95, 0.22);
+  overflow: hidden;
+  line-height: 0;
 }
 
 /* ─── Main ─── */
@@ -1229,22 +1227,11 @@ tbody tr.row-selected {
 }
 
 .auth-brand {
-  width: 52px;
-  height: 52px;
+  width: 56px;
+  height: 56px;
   border-radius: 16px;
-  display: grid;
-  place-items: center;
-  background: linear-gradient(145deg, #0d7a5f, #146b78);
-  color: #f4faf8;
-  font-weight: 700;
-  font-family: var(--font-display);
   box-shadow: 0 8px 24px rgba(13, 122, 95, 0.28);
   margin-bottom: 0.25rem;
-}
-
-.brand-mark-inner {
-  font-size: 1.15rem;
-  letter-spacing: -0.04em;
 }
 
 .auth-orb {

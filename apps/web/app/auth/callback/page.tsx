@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { BrandMark } from "../../../components/BrandMark";
 import { completeLoginFromCallback } from "../../../lib/auth";
 
 export default function AuthCallbackPage() {
@@ -20,7 +21,7 @@ export default function AuthCallbackPage() {
   return (
     <main className="auth-screen">
       <div className="auth-card">
-        <div className="brand-mark auth-brand">F</div>
+        <BrandMark variant="auth" />
         <h1>Finlens</h1>
         <p>{message}</p>
       </div>

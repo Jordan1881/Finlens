@@ -17,6 +17,10 @@ const figtree = Figtree({
 export const metadata: Metadata = {
   title: "Finlens",
   description: "Bank statement analysis for agents and humans",
+  icons: {
+    icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
+    apple: [{ url: "/brand/finlens-mark.svg" }],
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

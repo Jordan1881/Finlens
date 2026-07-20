@@ -14,8 +14,10 @@ build/
 cdk.out/
 .next/
 out/
-public/
 *.tsbuildinfo
+
+# Next.js static export copies public → out; keep source assets tracked
+# (do not ignore apps/web/public/)
 
 # Env & secrets
 .env
