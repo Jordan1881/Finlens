@@ -68,6 +68,13 @@ export function toFullStatusResponse(record: StatementRecord): StatementStatusRe
   if (record.status === "ready") {
     response.financialSummary = record.financialSummary;
     response.spendingInsights = record.spendingInsights;
+    // Full detail may include extract or S3 pointer; summary views never dump extract.
+    if (record.transactionExtract) {
+      response.transactionExtract = record.transactionExtract;
+    }
+    if (record.transactionExtractS3Key && !record.transactionExtract) {
+      response.transactionExtractS3Key = record.transactionExtractS3Key;
+    }
   }
 
   return response;

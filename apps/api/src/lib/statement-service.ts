@@ -1,4 +1,9 @@
-import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DeleteCommand,
@@ -29,6 +34,10 @@ import {
   toListItem,
   toSummaryView,
 } from "./statement-views.ts";
+import {
+  parseTransactionExtractJson,
+  statementExpiresAt,
+} from "./transaction-extract.ts";
 
 const LIST_LIMIT = 20;
 
@@ -92,15 +101,40 @@ export async function putPendingStatement(
   deps: StatementSeamDeps,
   record: StatementRecord,
 ): Promise<void> {
-  // DynamoDB TTL (epoch seconds); aligns with S3 90-day object expiration.
-  const expiresAt = Math.floor(Date.now() / 1000) + 90 * 24 * 60 * 60;
   await deps.ddb.send(
     new PutCommand({
       TableName: deps.tableName,
-      Item: { ...record, expiresAt },
+      Item: { ...record, expiresAt: statementExpiresAt() },
       ConditionExpression: "attribute_not_exists(statementId)",
     }),
   );
+}
+
+/** Load S3-backed extract into the record for detail=full (Workspace-scoped key). */
+async function hydrateTransactionExtract(
+  deps: StatementSeamDeps,
+  record: StatementRecord,
+): Promise<StatementRecord> {
+  if (record.transactionExtract || !record.transactionExtractS3Key) {
+    return record;
+  }
+
+  const object = (await deps.s3.send(
+    new GetObjectCommand({
+      Bucket: deps.bucketName,
+      Key: record.transactionExtractS3Key,
+    }),
+  )) as { Body?: { transformToString: (encoding?: string) => Promise<string> } };
+
+  const raw = await object.Body?.transformToString("utf8");
+  if (!raw) {
+    return record;
+  }
+
+  return {
+    ...record,
+    transactionExtract: parseTransactionExtractJson(raw),
+  };
 }
 
 export async function createStatementAndUploadFile(
@@ -160,7 +194,12 @@ export async function getStatementWith(
     return null;
   }
 
-  return detail === "summary" ? toSummaryView(record) : toFullStatusResponse(record);
+  if (detail === "summary") {
+    return toSummaryView(record);
+  }
+
+  const hydrated = await hydrateTransactionExtract(deps, record);
+  return toFullStatusResponse(hydrated);
 }
 
 export async function uploadStatementWith(
@@ -217,6 +256,15 @@ export async function deleteStatementWith(
       new DeleteObjectCommand({
         Bucket: deps.bucketName,
         Key: record.s3Key,
+      }),
+    );
+  }
+
+  if (record.transactionExtractS3Key) {
+    await deps.s3.send(
+      new DeleteObjectCommand({
+        Bucket: deps.bucketName,
+        Key: record.transactionExtractS3Key,
       }),
     );
   }

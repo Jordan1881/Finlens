@@ -22,7 +22,8 @@ async function converse(content: ContentBlock[], modelId: string): Promise<Analy
       system: [{ text: ANALYSIS_SYSTEM_PROMPT }],
       messages: [{ role: "user", content }],
       inferenceConfig: {
-        maxTokens: 4096,
+        // Higher budget so line-item extracts fit alongside summary + insights.
+        maxTokens: 8192,
         temperature: 0.1,
       },
     }),

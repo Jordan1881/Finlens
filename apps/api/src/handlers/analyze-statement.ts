@@ -1,9 +1,15 @@
-import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import type { FinancialSummary } from "@finlens/domain";
+import type { ExtractedTransaction, FinancialSummary } from "@finlens/domain";
 import { analyzeStatementFile } from "../lib/bedrock-analyze";
 import { validateForBedrock, type StatementFileType } from "../lib/file-validation";
+import {
+  serializeTransactionExtract,
+  shouldStoreExtractInline,
+  statementExpiresAt,
+  transactionExtractS3Key,
+} from "../lib/transaction-extract";
 
 const s3 = new S3Client({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -17,6 +23,31 @@ export interface AnalyzeInput {
 
 function fileTypeFromKey(key: string): StatementFileType {
   return key.toLowerCase().endsWith(".csv") ? "csv" : "pdf";
+}
+
+async function persistTransactionExtract(
+  bucket: string,
+  tenantId: string,
+  statementId: string,
+  transactions: ExtractedTransaction[],
+): Promise<
+  | { storage: "inline"; transactionExtract: ExtractedTransaction[] }
+  | { storage: "s3"; transactionExtractS3Key: string }
+> {
+  if (shouldStoreExtractInline(transactions)) {
+    return { storage: "inline", transactionExtract: transactions };
+  }
+
+  const extractKey = transactionExtractS3Key(tenantId, statementId);
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: extractKey,
+      Body: serializeTransactionExtract(transactions),
+      ContentType: "application/json",
+    }),
+  );
+  return { storage: "s3", transactionExtractS3Key: extractKey };
 }
 
 export async function handler(input: AnalyzeInput): Promise<{ ok: boolean }> {
@@ -57,21 +88,53 @@ export async function handler(input: AnalyzeInput): Promise<{ ok: boolean }> {
       topCategories: analysis.topCategories,
     };
 
-    await ddb.send(
-      new UpdateCommand({
-        TableName: tableName,
-        Key: { tenantId, statementId },
-        UpdateExpression:
-          "SET #status = :status, updatedAt = :updatedAt, financialSummary = :financialSummary, spendingInsights = :spendingInsights REMOVE errorMessage",
-        ExpressionAttributeNames: { "#status": "status" },
-        ExpressionAttributeValues: {
-          ":status": "ready",
-          ":updatedAt": new Date().toISOString(),
-          ":financialSummary": financialSummary,
-          ":spendingInsights": analysis.spendingInsights,
-        },
-      }),
+    const extractStore = await persistTransactionExtract(
+      bucket,
+      tenantId,
+      statementId,
+      analysis.transactions,
     );
+
+    const expiresAt = statementExpiresAt();
+    const updatedAt = new Date().toISOString();
+
+    if (extractStore.storage === "inline") {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: tableName,
+          Key: { tenantId, statementId },
+          UpdateExpression:
+            "SET #status = :status, updatedAt = :updatedAt, expiresAt = :expiresAt, financialSummary = :financialSummary, spendingInsights = :spendingInsights, transactionExtract = :transactionExtract REMOVE errorMessage, transactionExtractS3Key",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: {
+            ":status": "ready",
+            ":updatedAt": updatedAt,
+            ":expiresAt": expiresAt,
+            ":financialSummary": financialSummary,
+            ":spendingInsights": analysis.spendingInsights,
+            ":transactionExtract": extractStore.transactionExtract,
+          },
+        }),
+      );
+    } else {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: tableName,
+          Key: { tenantId, statementId },
+          UpdateExpression:
+            "SET #status = :status, updatedAt = :updatedAt, expiresAt = :expiresAt, financialSummary = :financialSummary, spendingInsights = :spendingInsights, transactionExtractS3Key = :transactionExtractS3Key REMOVE errorMessage, transactionExtract",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: {
+            ":status": "ready",
+            ":updatedAt": updatedAt,
+            ":expiresAt": expiresAt,
+            ":financialSummary": financialSummary,
+            ":spendingInsights": analysis.spendingInsights,
+            ":transactionExtractS3Key": extractStore.transactionExtractS3Key,
+          },
+        }),
+      );
+    }
 
     return { ok: true };
   } catch (error) {

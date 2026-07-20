@@ -265,14 +265,19 @@ export class FinlensStack extends cdk.Stack {
     statementsBucket.grantPut(createStatementFn);
     statementsBucket.grantPut(uploadStatementDirectFn);
     statementsBucket.grantRead(analyzeStatementFn);
+    // Analyze may write oversized transaction extracts under the tenant prefix.
+    statementsBucket.grantPut(analyzeStatementFn);
     statementsTable.grantReadWriteData(createStatementFn);
     statementsTable.grantReadWriteData(uploadStatementDirectFn);
     statementsTable.grantReadData(getStatementFn);
+    // detail=full hydrates S3-backed extracts for REST get_statement.
+    statementsBucket.grantRead(getStatementFn);
     statementsTable.grantReadData(listStatementsFn);
     statementsTable.grantReadWriteData(deleteStatementFn);
     statementsTable.grantReadWriteData(analyzeStatementFn);
     statementsTable.grantReadWriteData(mcpServerFn);
     statementsBucket.grantPut(mcpServerFn);
+    statementsBucket.grantRead(mcpServerFn);
     statementsBucket.grantDelete(deleteStatementFn);
     statementsBucket.grantDelete(mcpServerFn);
     apiKeysTable.grantReadData(createStatementFn);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { StatementRecord } from "@finlens/domain";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { DeleteObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { buildPendingStatement, sourceFormatForContentType } from "./statement-record.ts";
 import {
   createStatementAndUploadFile,
@@ -19,6 +19,7 @@ import {
   toListItem,
   toSummaryView,
 } from "./statement-views.ts";
+import { serializeTransactionExtract } from "./transaction-extract.ts";
 
 const NOW = "2026-07-20T12:00:00.000Z";
 
@@ -67,12 +68,16 @@ describe("Statement view / lifecycle mapping", () => {
           ],
         },
         spendingInsights: ["cut dining"],
+        transactionExtract: [
+          { date: "2026-06-01", description: "Cafe", amount: 40, type: "expense" },
+        ],
       }),
     );
     assert.equal(view.status, "ready");
     assert.equal(view.currency, "ILS");
     assert.equal(view.topCategories?.length, 3);
     assert.deepEqual(view.spendingInsights, ["cut dining"]);
+    assert.equal("transactionExtract" in view, false);
   });
 
   it("maps failed summary to structured ANALYSIS_FAILED error", () => {
@@ -82,7 +87,10 @@ describe("Statement view / lifecycle mapping", () => {
     assert.deepEqual(view.error, analysisFailedError("Bedrock timeout"));
   });
 
-  it("full status includes financialSummary only when ready", () => {
+  it("full status includes financialSummary and extract only when ready", () => {
+    const extract = [
+      { date: "2026-06-01", description: "Salary", amount: 100, type: "income" as const },
+    ];
     const ready = toFullStatusResponse(
       baseRecord({
         status: "ready",
@@ -94,15 +102,37 @@ describe("Statement view / lifecycle mapping", () => {
           netBalance: 0,
           topCategories: [],
         },
+        transactionExtract: extract,
       }),
     );
     assert.ok(ready.financialSummary);
+    assert.deepEqual(ready.transactionExtract, extract);
 
     const failed = toFullStatusResponse(
       baseRecord({ status: "failed", errorMessage: "parse error" }),
     );
     assert.equal(failed.financialSummary, undefined);
+    assert.equal(failed.transactionExtract, undefined);
     assert.equal(failed.errorMessage, "parse error");
+  });
+
+  it("full status returns S3 pointer when extract not hydrated", () => {
+    const ready = toFullStatusResponse(
+      baseRecord({
+        status: "ready",
+        financialSummary: {
+          currency: "ILS",
+          month: "2026-06",
+          totalIncome: 0,
+          totalExpenses: 0,
+          netBalance: 0,
+          topCategories: [],
+        },
+        transactionExtractS3Key: "statements/tenant-a/stmt-1.extract.json",
+      }),
+    );
+    assert.equal(ready.transactionExtractS3Key, "statements/tenant-a/stmt-1.extract.json");
+    assert.equal(ready.transactionExtract, undefined);
   });
 
   it("list item projects month from financialSummary", () => {
@@ -151,11 +181,13 @@ function createMemoryDeps(seed: StatementRecord[] = []): {
   deps: StatementSeamDeps;
   sent: SentCommand[];
   store: Map<string, StatementRecord>;
+  objects: Map<string, string>;
 } {
   const store = new Map<string, StatementRecord>();
   for (const record of seed) {
     store.set(`${record.tenantId}#${record.statementId}`, record);
   }
+  const objects = new Map<string, string>();
   const sent: SentCommand[] = [];
 
   const ddb: CommandClient = {
@@ -193,7 +225,29 @@ function createMemoryDeps(seed: StatementRecord[] = []): {
     async send(command: unknown) {
       const cmd = command as { constructor: { name: string }; input: Record<string, unknown> };
       sent.push({ name: cmd.constructor.name, input: cmd.input });
-      if (command instanceof PutObjectCommand || command instanceof DeleteObjectCommand) {
+      if (command instanceof PutObjectCommand) {
+        const key = cmd.input.Key as string;
+        const body = cmd.input.Body;
+        objects.set(
+          key,
+          typeof body === "string" ? body : Buffer.from(body as Uint8Array).toString("utf8"),
+        );
+        return {};
+      }
+      if (command instanceof GetObjectCommand) {
+        const key = cmd.input.Key as string;
+        const raw = objects.get(key);
+        if (raw === undefined) {
+          throw new Error(`Missing S3 object: ${key}`);
+        }
+        return {
+          Body: {
+            transformToString: async () => raw,
+          },
+        };
+      }
+      if (command instanceof DeleteObjectCommand) {
+        objects.delete(cmd.input.Key as string);
         return {};
       }
       throw new Error(`Unexpected S3 command: ${cmd.constructor.name}`);
@@ -209,6 +263,7 @@ function createMemoryDeps(seed: StatementRecord[] = []): {
     },
     sent,
     store,
+    objects,
   };
 }
 
@@ -284,7 +339,25 @@ describe("Statement seam lifecycle operations", () => {
     assert.ok(sent.some((c) => c.name === "DeleteCommand"));
   });
 
-  it("getStatement summary vs full for ready record", async () => {
+  it("deleteStatement also removes overflow extract object", async () => {
+    const extractKey = "statements/tenant-a/stmt-1.extract.json";
+    const record = baseRecord({
+      status: "ready",
+      transactionExtractS3Key: extractKey,
+    });
+    const { deps, objects, sent } = createMemoryDeps([record]);
+    objects.set(extractKey, serializeTransactionExtract([]));
+
+    await deleteStatementWith(deps, "tenant-a", "stmt-1");
+    assert.equal(objects.has(extractKey), false);
+    const deletes = sent.filter((c) => c.name === "DeleteObjectCommand");
+    assert.equal(deletes.length, 2);
+  });
+
+  it("getStatement summary vs full for ready record with inline extract", async () => {
+    const extract = [
+      { date: "2026-06-01", description: "food", amount: 5, type: "expense" as const },
+    ];
     const record = baseRecord({
       status: "ready",
       financialSummary: {
@@ -295,6 +368,7 @@ describe("Statement seam lifecycle operations", () => {
         netBalance: 5,
         topCategories: [{ category: "food", amount: 5 }],
       },
+      transactionExtract: extract,
     });
     const { deps } = createMemoryDeps([record]);
 
@@ -302,9 +376,41 @@ describe("Statement seam lifecycle operations", () => {
     assert.ok(summary);
     assert.equal("totalIncome" in summary && summary.totalIncome, 10);
     assert.equal("financialSummary" in summary, false);
+    assert.equal("transactionExtract" in summary, false);
 
     const full = await getStatementWith(deps, "tenant-a", "stmt-1", "full");
     assert.ok(full && "financialSummary" in full);
     assert.equal(full.financialSummary?.currency, "ILS");
+    assert.deepEqual(full.transactionExtract, extract);
+  });
+
+  it("getStatement full hydrates extract from S3 pointer", async () => {
+    const extractKey = "statements/tenant-a/stmt-1.extract.json";
+    const extract = [
+      { date: "2026-06-02", description: "Bus", amount: 12, type: "expense" as const },
+    ];
+    const record = baseRecord({
+      status: "ready",
+      financialSummary: {
+        currency: "ILS",
+        month: "2026-06",
+        totalIncome: 0,
+        totalExpenses: 12,
+        netBalance: -12,
+        topCategories: [],
+      },
+      transactionExtractS3Key: extractKey,
+    });
+    const { deps, objects } = createMemoryDeps([record]);
+    objects.set(extractKey, serializeTransactionExtract(extract));
+
+    const summary = await getStatementWith(deps, "tenant-a", "stmt-1", "summary");
+    assert.ok(summary);
+    assert.equal("transactionExtract" in summary, false);
+
+    const full = await getStatementWith(deps, "tenant-a", "stmt-1", "full");
+    assert.ok(full && "transactionExtract" in full);
+    assert.deepEqual(full.transactionExtract, extract);
+    assert.equal(full.transactionExtractS3Key, undefined);
   });
 });

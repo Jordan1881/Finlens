@@ -14,6 +14,15 @@ export interface FinancialSummary {
   topCategories: Array<{ category: string; amount: number }>;
 }
 
+/** Structured line items produced by Analysis for later ask/compare tools. */
+export interface ExtractedTransaction {
+  date: string;
+  description: string;
+  amount: number;
+  type: "income" | "expense";
+  category?: string;
+}
+
 export interface StatementRecord {
   tenantId: string;
   statementId: string;
@@ -25,6 +34,10 @@ export interface StatementRecord {
   errorMessage?: string;
   financialSummary?: FinancialSummary;
   spendingInsights?: string[];
+  /** Inline extract when modest; omitted when overflowed to S3. */
+  transactionExtract?: ExtractedTransaction[];
+  /** Tenant-prefixed S3 object when extract exceeds the DynamoDB size cap. */
+  transactionExtractS3Key?: string;
 }
 
 export interface CreateStatementResponse {
@@ -48,6 +61,10 @@ export interface StatementStatusResponse {
   errorMessage?: string;
   financialSummary?: FinancialSummary;
   spendingInsights?: string[];
+  /** Present on detail=full when Analysis completed (hydrated from DDB or S3). */
+  transactionExtract?: ExtractedTransaction[];
+  /** Set when extract lives in S3 and was not hydrated into transactionExtract. */
+  transactionExtractS3Key?: string;
 }
 
 export interface StatementSummaryView {
