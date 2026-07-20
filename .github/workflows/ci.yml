@@ -6,7 +6,33 @@ on:
   pull_request:
 
 jobs:
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      # Fail on high/critical with narrow allowlist for CDK-bundled noise.
+      # Policy documented in docs/security/ci-gate.md.
+      - run: node scripts/ci-dependency-audit.mjs
+
   cdk-synth:
+    name: CDK synth
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

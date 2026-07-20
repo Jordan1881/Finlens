@@ -1,12 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api, apiConfigured, getApiUrl, getMcpUrl } from "../lib/api";
+import {
+  beginLogin,
+  beginLogout,
+  isAuthenticated,
+  isCognitoConfigured,
+} from "../lib/auth";
 
-const API_URL = process.env.NEXT_PUBLIC_FINLENS_API_URL ?? "";
-const API_KEY = process.env.NEXT_PUBLIC_FINLENS_API_KEY ?? "";
 const POLL_MS = 15_000;
+const LIST_PAGE_SIZE = 20;
+const MCP_KEY_PLACEHOLDER = "<paste-minted-api-key>";
 
-type Section = "dashboard" | "statements" | "insights";
+type Section = "dashboard" | "statements" | "insights" | "api-keys" | "mcp-setup";
 
 type StatementRow = {
   statementId: string;
@@ -14,6 +21,18 @@ type StatementRow = {
   createdAt: string;
   month?: string | null;
   sourceFormat?: "pdf" | "csv";
+};
+
+type ApiKeyRow = {
+  keyId: string;
+  tenantId: string;
+  createdAt: string;
+  status: "active" | "revoked";
+  prefix: string;
+};
+
+type MintApiKeyResult = ApiKeyRow & {
+  apiKey: string;
 };
 
 type StatementDetail = {
@@ -28,35 +47,44 @@ type StatementDetail = {
   netBalance?: number;
   topCategories?: Array<{ category: string; amount: number }>;
   spendingInsights?: string[];
-  error?: { message: string; nextStep?: string; code?: string };
+  error?: { message: string; nextStep?: string; code?: string; retryable?: boolean };
 };
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
-    ...init,
-    headers: {
-      "X-Api-Key": API_KEY,
-      ...(init?.headers ?? {}),
-    },
-  });
+type CategoryBreakdown = {
+  statementId: string;
+  status: string;
+  currency?: string;
+  month?: string | null;
+  source: "summary" | "extract";
+  categories: Array<{ category: string; amount: number; share?: number }>;
+  totalCategorized: number;
+};
 
-  const text = await res.text();
-  if (!res.ok) {
-    try {
-      const body = JSON.parse(text) as { error?: { message?: string } };
-      if (body.error?.message) {
-        throw new Error(body.error.message);
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message !== text) {
-        throw error;
-      }
-    }
-    throw new Error(text || `Request failed (${res.status})`);
-  }
+type CompareSide = {
+  statementId: string;
+  month: string | null;
+  currency: string;
+  totalIncome: number;
+  totalExpenses: number;
+  netBalance: number;
+  topCategories: Array<{ category: string; amount: number }>;
+};
 
-  return JSON.parse(text) as T;
-}
+type CompareResult = {
+  a: CompareSide;
+  b: CompareSide;
+  deltas: {
+    totalIncome: number;
+    totalExpenses: number;
+    netBalance: number;
+    categories: Array<{
+      category: string;
+      amountA: number;
+      amountB: number;
+      delta: number;
+    }>;
+  };
+};
 
 function formatMoney(value: number | undefined, currency = "ILS") {
   if (value === undefined) {
@@ -71,6 +99,43 @@ function formatMoney(value: number | undefined, currency = "ILS") {
   } catch {
     return `${value.toLocaleString()} ${currency}`;
   }
+}
+
+function formatDelta(value: number, currency = "ILS") {
+  const formatted = formatMoney(Math.abs(value), currency);
+  if (value > 0) {
+    return `+${formatted}`;
+  }
+  if (value < 0) {
+    return `−${formatted}`;
+  }
+  return formatted;
+}
+
+function statementLabel(s: { statementId: string; month?: string | null; status?: string }) {
+  const id = `${s.statementId.slice(0, 8)}…`;
+  if (s.month) {
+    return `${s.month} (${id})`;
+  }
+  return id;
+}
+
+function AnalysisErrorBanner({
+  error,
+}: {
+  error: { message: string; nextStep?: string; code?: string };
+}) {
+  return (
+    <div className="error-banner">
+      <strong>{error.message}</strong>
+      {error.code && <p className="error-code">{error.code}</p>}
+      {error.nextStep && (
+        <p className="error-next">
+          <span className="error-next-label">Next step:</span> {error.nextStep}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function isProcessingStatus(status: string) {
@@ -107,6 +172,45 @@ function IconInsights() {
         fill="currentColor"
       />
     </svg>
+  );
+}
+
+function IconKeys() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M7 14a5 5 0 1 1 4.9-6H21v3h-2v2h-2v2h-3.1A5 5 0 0 1 7 14Zm0-2a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+function IconMcp() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M4 7h6v2H4V7Zm10 0h6v2h-6V7ZM4 15h6v2H4v-2Zm10 0h6v2h-6v-2ZM9 9v6h2V9H9Zm4 0v6h2V9h-2Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+function buildMcpConfigJson(mcpUrl: string, apiKey: string): string {
+  return JSON.stringify(
+    {
+      mcpServers: {
+        finlens: {
+          url: mcpUrl,
+          headers: {
+            "X-Api-Key": apiKey,
+          },
+        },
+      },
+    },
+    null,
+    2,
   );
 }
 
@@ -166,12 +270,7 @@ function StatementOverview({ selected }: { selected: StatementDetail }) {
         {selected.month ? ` · ${selected.month}` : ""}
       </p>
 
-      {selected.error && (
-        <div className="error-banner">
-          <strong>{selected.error.message}</strong>
-          {selected.error.nextStep && <p className="error-next">{selected.error.nextStep}</p>}
-        </div>
-      )}
+      {selected.error && <AnalysisErrorBanner error={selected.error} />}
 
       {selected.status === "ready" && (
         <>
@@ -243,7 +342,13 @@ function StatementOverview({ selected }: { selected: StatementDetail }) {
       )}
 
       {selected.status === "failed" && !selected.error && (
-        <div className="error-banner">Analysis failed. Upload the statement again.</div>
+        <div className="error-banner">
+          <strong>Analysis failed.</strong>
+          <p className="error-next">
+            <span className="error-next-label">Next step:</span> Upload the statement again (PDF
+            or CSV).
+          </p>
+        </div>
       )}
     </>
   );
@@ -255,16 +360,51 @@ export default function HomePage() {
   const [selected, setSelected] = useState<StatementDetail | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [insightSummaries, setInsightSummaries] = useState<StatementDetail[]>([]);
+  const [failedInsights, setFailedInsights] = useState<StatementDetail[]>([]);
+  const [compareA, setCompareA] = useState<string>("");
+  const [compareB, setCompareB] = useState<string>("");
+  const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  const [categoryStatementId, setCategoryStatementId] = useState<string>("");
+  const [categoryBreakdown, setCategoryBreakdown] = useState<CategoryBreakdown | null>(null);
+  const [categoryError, setCategoryError] = useState<string | null>(null);
+  const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([]);
+  const [mintedSecret, setMintedSecret] = useState<MintApiKeyResult | null>(null);
+  const [listNextToken, setListNextToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [authed, setAuthed] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [copiedHint, setCopiedHint] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(async () => {
-    const data = await api<{ statements: StatementRow[] }>("/v1/statements");
-    setStatements(data.statements ?? []);
+  const mcpUrl = useMemo(() => getMcpUrl(), []);
+  const apiBaseUrl = useMemo(() => getApiUrl(), []);
+  const mcpConfigTemplate = useMemo(
+    () => (mcpUrl ? buildMcpConfigJson(mcpUrl, MCP_KEY_PLACEHOLDER) : ""),
+    [mcpUrl],
+  );
+
+  const load = useCallback(async (opts?: { append?: boolean; token?: string }) => {
+    const qs = new URLSearchParams({ limit: String(LIST_PAGE_SIZE) });
+    if (opts?.token) {
+      qs.set("nextToken", opts.token);
+    }
+    const data = await api<{ statements: StatementRow[]; nextToken?: string }>(
+      `/v1/statements?${qs.toString()}`,
+    );
+    const rows = data.statements ?? [];
+    setStatements((prev) => (opts?.append ? [...prev, ...rows] : rows));
+    setListNextToken(data.nextToken ?? null);
+  }, []);
+
+  const loadApiKeys = useCallback(async () => {
+    const data = await api<{ keys: ApiKeyRow[] }>("/v1/api-keys");
+    setApiKeys(data.keys ?? []);
   }, []);
 
   const refreshAll = useCallback(async () => {
@@ -281,12 +421,32 @@ export default function HomePage() {
   }, [load, selectedId]);
 
   useEffect(() => {
+    setAuthed(isAuthenticated());
+    setAuthReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!authReady || !authed) {
+      setInitialLoading(false);
+      return;
+    }
+    setInitialLoading(true);
     load()
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setInitialLoading(false));
-  }, [load]);
+  }, [authReady, authed, load]);
 
   useEffect(() => {
+    if (!authReady || !authed || section !== "api-keys") {
+      return;
+    }
+    void loadApiKeys().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, [authReady, authed, section, loadApiKeys]);
+
+  useEffect(() => {
+    if (!authed) {
+      return;
+    }
     const needsPoll =
       statements.some((s) => isProcessingStatus(s.status)) ||
       (selected != null && isProcessingStatus(selected.status));
@@ -300,29 +460,47 @@ export default function HomePage() {
     }, POLL_MS);
 
     return () => window.clearInterval(timer);
-  }, [statements, selected, refreshAll]);
+  }, [authed, statements, selected, refreshAll]);
 
   useEffect(() => {
-    if (section !== "insights") {
+    if (!authed || section !== "insights") {
       return;
     }
 
     const ready = statements.filter((s) => s.status === "ready").slice(0, 10);
+    const failed = statements.filter((s) => s.status === "failed").slice(0, 10);
+
     if (ready.length === 0) {
       setInsightSummaries([]);
+    }
+    if (failed.length === 0) {
+      setFailedInsights([]);
+    }
+    if (ready.length === 0 && failed.length === 0) {
       return;
     }
 
     let cancelled = false;
     void (async () => {
       try {
-        const summaries = await Promise.all(
-          ready.map((s) =>
-            api<StatementDetail>(`/v1/statements/${s.statementId}?detail=summary`),
+        const [readySummaries, failedSummaries] = await Promise.all([
+          Promise.all(
+            ready.map((s) =>
+              api<StatementDetail>(`/v1/statements/${s.statementId}?detail=summary`),
+            ),
           ),
-        );
+          Promise.all(
+            failed.map((s) =>
+              api<StatementDetail>(`/v1/statements/${s.statementId}?detail=summary`),
+            ),
+          ),
+        ]);
         if (!cancelled) {
-          setInsightSummaries(summaries);
+          setInsightSummaries(readySummaries);
+          setFailedInsights(failedSummaries);
+          setCompareA((prev) => prev || ready[0]?.statementId || "");
+          setCompareB((prev) => prev || ready[1]?.statementId || ready[0]?.statementId || "");
+          setCategoryStatementId((prev) => prev || ready[0]?.statementId || "");
         }
       } catch (e) {
         if (!cancelled) {
@@ -334,7 +512,19 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [section, statements]);
+  }, [authed, section, statements]);
+
+  const readyStatements = useMemo(
+    () => statements.filter((s) => s.status === "ready"),
+    [statements],
+  );
+
+  const categoryMaxAmount = useMemo(() => {
+    if (!categoryBreakdown?.categories.length) {
+      return 0;
+    }
+    return Math.max(...categoryBreakdown.categories.map((c) => c.amount));
+  }, [categoryBreakdown]);
 
   const stats = useMemo(() => {
     const ready = statements.filter((s) => s.status === "ready").length;
@@ -411,6 +601,49 @@ export default function HomePage() {
     }
   }
 
+  async function onCompareStatements() {
+    if (!compareA || !compareB) {
+      setCompareError("Pick two ready statements to compare.");
+      return;
+    }
+    setBusy(true);
+    setCompareError(null);
+    setCompareResult(null);
+    try {
+      const result = await api<CompareResult>("/v1/statements/compare", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ statementIdA: compareA, statementIdB: compareB }),
+      });
+      setCompareResult(result);
+    } catch (e) {
+      setCompareError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onLoadCategories(statementId: string) {
+    if (!statementId) {
+      setCategoryError("Pick a ready statement for the category chart.");
+      return;
+    }
+    setBusy(true);
+    setCategoryError(null);
+    setCategoryBreakdown(null);
+    setCategoryStatementId(statementId);
+    try {
+      const result = await api<CategoryBreakdown>(
+        `/v1/statements/${statementId}/categories`,
+      );
+      setCategoryBreakdown(result);
+    } catch (e) {
+      setCategoryError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onDeleteStatement(id: string) {
     const label = `${id.slice(0, 8)}…`;
     if (
@@ -430,7 +663,85 @@ export default function HomePage() {
         setSelectedId(null);
       }
       setInsightSummaries((rows) => rows.filter((r) => r.statementId !== id));
+      setFailedInsights((rows) => rows.filter((r) => r.statementId !== id));
+      if (compareA === id) {
+        setCompareA("");
+      }
+      if (compareB === id) {
+        setCompareB("");
+      }
+      if (compareResult?.a.statementId === id || compareResult?.b.statementId === id) {
+        setCompareResult(null);
+      }
+      if (categoryStatementId === id) {
+        setCategoryStatementId("");
+        setCategoryBreakdown(null);
+      }
       await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onMintApiKey() {
+    setBusy(true);
+    setError(null);
+    try {
+      const minted = await api<MintApiKeyResult>("/v1/api-keys", { method: "POST" });
+      setMintedSecret(minted);
+      await loadApiKeys();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRevokeApiKey(keyId: string) {
+    const label = keyId.slice(0, 12);
+    if (
+      !window.confirm(
+        `Revoke API key ${label}…? Agents using this key will fail immediately.`,
+      )
+    ) {
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/v1/api-keys/${keyId}`, { method: "DELETE" });
+      if (mintedSecret?.keyId === keyId) {
+        setMintedSecret(null);
+      }
+      await loadApiKeys();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyText(value: string, hint = "Copied") {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedHint(hint);
+      window.setTimeout(() => setCopiedHint(null), 2000);
+    } catch {
+      setError("Could not copy to clipboard — select the text and copy manually.");
+    }
+  }
+
+  async function onLoadMore() {
+    if (!listNextToken || busy) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await load({ append: true, token: listNextToken });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -483,75 +794,89 @@ export default function HomePage() {
 
   function renderStatementsTable(compact = false) {
     return (
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Statement</th>
-              <th>Format</th>
-              <th>Status</th>
-              <th>Period</th>
-              {!compact && <th>Uploaded</th>}
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.length === 0 && (
+      <>
+        <div className="table-wrap">
+          <table>
+            <thead>
               <tr>
-                <td colSpan={compact ? 5 : 6}>
-                  <div className="empty-state">{emptyTableMessage}</div>
-                </td>
+                <th>Statement</th>
+                <th>Format</th>
+                <th>Status</th>
+                <th>Period</th>
+                {!compact && <th>Uploaded</th>}
+                <th />
               </tr>
-            )}
-            {filtered.map((s) => (
-              <tr
-                key={s.statementId}
-                className={[
-                  selectedId === s.statementId ? "row-selected" : "",
-                  "row-clickable",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-                onClick={() => void openStatement(s.statementId)}
-              >
-                <td>{s.statementId.slice(0, 8)}…</td>
-                <td>
-                  <span className="type-pill">{s.sourceFormat ?? "pdf"}</span>
-                </td>
-                <td>
-                  <span className={`status-pill status-${s.status}`}>{s.status}</span>
-                </td>
-                <td>{s.month ?? "—"}</td>
-                {!compact && <td>{new Date(s.createdAt).toLocaleDateString()}</td>}
-                <td className="row-actions">
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-ghost"
-                    disabled={busy}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void openStatement(s.statementId);
-                    }}
-                  >
-                    View
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-danger"
-                    disabled={busy}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void onDeleteStatement(s.statementId);
-                    }}
-                  >
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={compact ? 5 : 6}>
+                    <div className="empty-state">{emptyTableMessage}</div>
+                  </td>
+                </tr>
+              )}
+              {filtered.map((s) => (
+                <tr
+                  key={s.statementId}
+                  className={[
+                    selectedId === s.statementId ? "row-selected" : "",
+                    "row-clickable",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  onClick={() => void openStatement(s.statementId)}
+                >
+                  <td>{s.statementId.slice(0, 8)}…</td>
+                  <td>
+                    <span className="type-pill">{s.sourceFormat ?? "pdf"}</span>
+                  </td>
+                  <td>
+                    <span className={`status-pill status-${s.status}`}>{s.status}</span>
+                  </td>
+                  <td>{s.month ?? "—"}</td>
+                  {!compact && <td>{new Date(s.createdAt).toLocaleDateString()}</td>}
+                  <td className="row-actions">
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost"
+                      disabled={busy}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void openStatement(s.statementId);
+                      }}
+                    >
+                      View
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-danger"
+                      disabled={busy}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void onDeleteStatement(s.statementId);
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {listNextToken && (
+          <div className="load-more-row">
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              disabled={busy}
+              onClick={() => void onLoadMore()}
+            >
+              {busy ? "Loading…" : "Load more"}
+            </button>
+          </div>
+        )}
+      </>
     );
   }
 
@@ -560,14 +885,70 @@ export default function HomePage() {
       ? "Dashboard"
       : section === "statements"
         ? "Statements"
-        : "Insights";
+        : section === "insights"
+          ? "Insights"
+          : section === "api-keys"
+            ? "API keys"
+            : "MCP setup";
 
   const sectionSubtitle =
     section === "dashboard"
       ? "Overview of your uploaded statements and spending insights."
       : section === "statements"
         ? "Browse uploads, open summaries, and track processing status."
-        : "Highlights from analyzed statements.";
+        : section === "insights"
+          ? "Compare statements and category charts from the same Workspace tools agents use."
+          : section === "api-keys"
+            ? "Mint keys for MCP and agents. The secret is shown once; only a hash is stored."
+            : "Copy Cursor MCP config with the API URL, then paste a minted key — never baked into the web build.";
+
+  if (!authReady) {
+    return (
+      <main className="auth-screen">
+        <div className="auth-card">
+          <div className="brand-mark auth-brand">F</div>
+          <h1>Finlens</h1>
+          <p>Loading…</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (!authed) {
+    return (
+      <main className="auth-screen">
+        <div className="auth-card">
+          <div className="brand-mark auth-brand">F</div>
+          <h1>Finlens</h1>
+          <p>Sign in with Cognito to open your personal Workspace.</p>
+          {!isCognitoConfigured() && (
+            <div className="error-banner">
+              Cognito is not configured. Set NEXT_PUBLIC_COGNITO_USER_POOL_ID,
+              NEXT_PUBLIC_COGNITO_CLIENT_ID, and NEXT_PUBLIC_COGNITO_DOMAIN.
+            </div>
+          )}
+          {!apiConfigured() && (
+            <div className="error-banner">Set NEXT_PUBLIC_FINLENS_API_URL for API calls.</div>
+          )}
+          <button
+            type="button"
+            className="btn"
+            disabled={loginBusy || !isCognitoConfigured()}
+            onClick={() => {
+              setLoginBusy(true);
+              void beginLogin().catch((e) => {
+                setLoginBusy(false);
+                setError(e instanceof Error ? e.message : String(e));
+              });
+            }}
+          >
+            {loginBusy ? "Redirecting…" : "Sign in"}
+          </button>
+          {error && <div className="error-banner">{error}</div>}
+        </div>
+      </main>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -606,6 +987,22 @@ export default function HomePage() {
             >
               <IconInsights />
               Insights
+            </button>
+            <button
+              type="button"
+              className={`nav-item${section === "api-keys" ? " active" : ""}`}
+              onClick={() => setSection("api-keys")}
+            >
+              <IconKeys />
+              API keys
+            </button>
+            <button
+              type="button"
+              className={`nav-item${section === "mcp-setup" ? " active" : ""}`}
+              onClick={() => setSection("mcp-setup")}
+            >
+              <IconMcp />
+              MCP setup
             </button>
           </nav>
         </div>
@@ -646,6 +1043,13 @@ export default function HomePage() {
             >
               Upload
             </button>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              onClick={() => beginLogout()}
+            >
+              Sign out
+            </button>
             <div className="avatar" aria-hidden>
               FL
             </div>
@@ -659,6 +1063,7 @@ export default function HomePage() {
           </div>
 
           {error && <div className="error-banner">{error}</div>}
+          {copiedHint && <div className="info-banner">{copiedHint}</div>}
           {initialLoading && <div className="info-banner processing">Loading statements…</div>}
 
           {section === "dashboard" && (
@@ -804,52 +1209,625 @@ export default function HomePage() {
           )}
 
           {section === "insights" && (
-            <section className="insights-grid">
-              {insightSummaries.length === 0 && (
-                <div className="panel">
-                  <div className="panel-body">
+            <section className="insights-layout">
+              <div className="panel">
+                <div className="panel-head">
+                  <h3>Compare statements</h3>
+                  <span className="panel-meta">POST /v1/statements/compare</span>
+                </div>
+                <div className="panel-body">
+                  {readyStatements.length < 2 ? (
                     <div className="empty-state">
-                      No analyzed statements yet. Upload a PDF or CSV and wait for analysis to finish.
+                      Need at least two ready statements in this Workspace to compare.
                     </div>
+                  ) : (
+                    <>
+                      <div className="compare-pickers">
+                        <label className="field">
+                          <span>Statement A</span>
+                          <select
+                            value={compareA}
+                            onChange={(e) => {
+                              setCompareA(e.target.value);
+                              setCompareResult(null);
+                            }}
+                          >
+                            <option value="">Select…</option>
+                            {readyStatements.map((s) => (
+                              <option key={s.statementId} value={s.statementId}>
+                                {statementLabel(s)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="field">
+                          <span>Statement B</span>
+                          <select
+                            value={compareB}
+                            onChange={(e) => {
+                              setCompareB(e.target.value);
+                              setCompareResult(null);
+                            }}
+                          >
+                            <option value="">Select…</option>
+                            {readyStatements.map((s) => (
+                              <option key={`b-${s.statementId}`} value={s.statementId}>
+                                {statementLabel(s)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={busy || !compareA || !compareB}
+                          onClick={() => void onCompareStatements()}
+                        >
+                          {busy ? "Comparing…" : "Compare"}
+                        </button>
+                      </div>
+                      {compareError && (
+                        <div className="error-banner">
+                          <strong>{compareError}</strong>
+                        </div>
+                      )}
+                      {compareResult && (
+                        <div className="compare-results">
+                          <div className="compare-sides">
+                            <div className="compare-side">
+                              <h4>{statementLabel(compareResult.a)}</h4>
+                              <div className="summary-grid">
+                                <div className="metric">
+                                  <span>Income</span>
+                                  <strong>
+                                    {formatMoney(
+                                      compareResult.a.totalIncome,
+                                      compareResult.a.currency,
+                                    )}
+                                  </strong>
+                                </div>
+                                <div className="metric">
+                                  <span>Expenses</span>
+                                  <strong>
+                                    {formatMoney(
+                                      compareResult.a.totalExpenses,
+                                      compareResult.a.currency,
+                                    )}
+                                  </strong>
+                                </div>
+                                <div className="metric">
+                                  <span>Net</span>
+                                  <strong>
+                                    {formatMoney(
+                                      compareResult.a.netBalance,
+                                      compareResult.a.currency,
+                                    )}
+                                  </strong>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="compare-side">
+                              <h4>{statementLabel(compareResult.b)}</h4>
+                              <div className="summary-grid">
+                                <div className="metric">
+                                  <span>Income</span>
+                                  <strong>
+                                    {formatMoney(
+                                      compareResult.b.totalIncome,
+                                      compareResult.b.currency,
+                                    )}
+                                  </strong>
+                                </div>
+                                <div className="metric">
+                                  <span>Expenses</span>
+                                  <strong>
+                                    {formatMoney(
+                                      compareResult.b.totalExpenses,
+                                      compareResult.b.currency,
+                                    )}
+                                  </strong>
+                                </div>
+                                <div className="metric">
+                                  <span>Net</span>
+                                  <strong>
+                                    {formatMoney(
+                                      compareResult.b.netBalance,
+                                      compareResult.b.currency,
+                                    )}
+                                  </strong>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          <h4 className="subsection-title spaced">Deltas (B − A)</h4>
+                          <div className="summary-grid">
+                            <div className="metric">
+                              <span>Income</span>
+                              <strong
+                                className={
+                                  compareResult.deltas.totalIncome >= 0
+                                    ? "delta-pos"
+                                    : "delta-neg"
+                                }
+                              >
+                                {formatDelta(
+                                  compareResult.deltas.totalIncome,
+                                  compareResult.b.currency,
+                                )}
+                              </strong>
+                            </div>
+                            <div className="metric">
+                              <span>Expenses</span>
+                              <strong
+                                className={
+                                  compareResult.deltas.totalExpenses >= 0
+                                    ? "delta-pos"
+                                    : "delta-neg"
+                                }
+                              >
+                                {formatDelta(
+                                  compareResult.deltas.totalExpenses,
+                                  compareResult.b.currency,
+                                )}
+                              </strong>
+                            </div>
+                            <div className="metric">
+                              <span>Net</span>
+                              <strong
+                                className={
+                                  compareResult.deltas.netBalance >= 0 ? "delta-pos" : "delta-neg"
+                                }
+                              >
+                                {formatDelta(
+                                  compareResult.deltas.netBalance,
+                                  compareResult.b.currency,
+                                )}
+                              </strong>
+                            </div>
+                          </div>
+                          {compareResult.deltas.categories.length > 0 && (
+                            <>
+                              <h4 className="subsection-title spaced">Category deltas</h4>
+                              <div className="table-wrap">
+                                <table>
+                                  <thead>
+                                    <tr>
+                                      <th>Category</th>
+                                      <th>A</th>
+                                      <th>B</th>
+                                      <th>Δ</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {compareResult.deltas.categories.map((c) => (
+                                      <tr key={c.category}>
+                                        <td>{c.category}</td>
+                                        <td>
+                                          {formatMoney(c.amountA, compareResult.a.currency)}
+                                        </td>
+                                        <td>
+                                          {formatMoney(c.amountB, compareResult.b.currency)}
+                                        </td>
+                                        <td
+                                          className={
+                                            c.delta >= 0 ? "delta-pos" : "delta-neg"
+                                          }
+                                        >
+                                          {formatDelta(c.delta, compareResult.b.currency)}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="panel">
+                <div className="panel-head">
+                  <h3>Category breakdown</h3>
+                  <span className="panel-meta">GET /v1/statements/{"{id}"}/categories</span>
+                </div>
+                <div className="panel-body">
+                  {readyStatements.length === 0 ? (
+                    <div className="empty-state">
+                      No ready statements yet. Upload a PDF or CSV and wait for analysis.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="compare-pickers">
+                        <label className="field">
+                          <span>Statement</span>
+                          <select
+                            value={categoryStatementId}
+                            onChange={(e) => {
+                              setCategoryStatementId(e.target.value);
+                              setCategoryBreakdown(null);
+                            }}
+                          >
+                            <option value="">Select…</option>
+                            {readyStatements.map((s) => (
+                              <option key={`cat-${s.statementId}`} value={s.statementId}>
+                                {statementLabel(s)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={busy || !categoryStatementId}
+                          onClick={() => void onLoadCategories(categoryStatementId)}
+                        >
+                          {busy ? "Loading…" : "Load chart"}
+                        </button>
+                      </div>
+                      {categoryError && (
+                        <div className="error-banner">
+                          <strong>{categoryError}</strong>
+                        </div>
+                      )}
+                      {categoryBreakdown && (
+                        <>
+                          <p className="overview-meta">
+                            {statementLabel(categoryBreakdown)}
+                            {categoryBreakdown.currency
+                              ? ` · ${categoryBreakdown.currency}`
+                              : ""}
+                            {" · "}
+                            source: {categoryBreakdown.source}
+                            {" · "}
+                            total{" "}
+                            {formatMoney(
+                              categoryBreakdown.totalCategorized,
+                              categoryBreakdown.currency,
+                            )}
+                          </p>
+                          {categoryBreakdown.categories.length === 0 ? (
+                            <div className="empty-state">No categories for this statement.</div>
+                          ) : (
+                            <div className="category-bars chart">
+                              {categoryBreakdown.categories.map((c) => (
+                                <div className="category-row" key={c.category}>
+                                  <span>
+                                    {c.category}
+                                    {c.share !== undefined
+                                      ? ` (${Math.round(c.share * 100)}%)`
+                                      : ""}
+                                  </span>
+                                  <span>
+                                    {formatMoney(c.amount, categoryBreakdown.currency)}
+                                  </span>
+                                  <div className="bar-track">
+                                    <div
+                                      className="bar-fill"
+                                      style={{
+                                        width:
+                                          categoryMaxAmount > 0
+                                            ? `${Math.round(
+                                                (c.amount / categoryMaxAmount) * 100,
+                                              )}%`
+                                            : "0%",
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {failedInsights.length > 0 && (
+                <div className="panel">
+                  <div className="panel-head">
+                    <h3>Failed analyses</h3>
+                    <span className="panel-meta">{failedInsights.length} need attention</span>
+                  </div>
+                  <div className="panel-body failed-insights-list">
+                    {failedInsights.map((row) => (
+                      <div className="failed-insight-row" key={row.statementId}>
+                        <div className="failed-insight-meta">
+                          <strong>{statementLabel(row)}</strong>
+                          <span className={`status-pill status-${row.status}`}>{row.status}</span>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-ghost"
+                            onClick={() => {
+                              setSection("statements");
+                              void openStatement(row.statementId);
+                            }}
+                          >
+                            Open
+                          </button>
+                        </div>
+                        {row.error ? (
+                          <AnalysisErrorBanner error={row.error} />
+                        ) : (
+                          <div className="error-banner">
+                            <strong>Analysis failed.</strong>
+                            <p className="error-next">
+                              <span className="error-next-label">Next step:</span> Upload the
+                              statement again (PDF or CSV).
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
-              {insightSummaries.map((summary) => (
-                <div className="panel insight-card" key={summary.statementId}>
-                  <div className="panel-head">
-                    <h3>{summary.month ?? summary.statementId.slice(0, 8)}</h3>
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-ghost"
-                      onClick={() => {
-                        setSection("dashboard");
-                        void openStatement(summary.statementId);
-                      }}
-                    >
-                      Open
-                    </button>
-                  </div>
-                  <div className="panel-body">
-                    <div className="summary-grid">
-                      <div className="metric">
-                        <span>Net</span>
-                        <strong>{formatMoney(summary.netBalance, summary.currency)}</strong>
-                      </div>
-                      <div className="metric">
-                        <span>Expenses</span>
-                        <strong>{formatMoney(summary.totalExpenses, summary.currency)}</strong>
+
+              <div className="insights-grid">
+                {insightSummaries.length === 0 && failedInsights.length === 0 && (
+                  <div className="panel">
+                    <div className="panel-body">
+                      <div className="empty-state">
+                        No analyzed statements yet. Upload a PDF or CSV and wait for analysis to
+                        finish.
                       </div>
                     </div>
-                    {summary.spendingInsights && summary.spendingInsights.length > 0 && (
-                      <ul className="insights-list compact">
-                        {summary.spendingInsights.slice(0, 2).map((i) => (
-                          <li key={i}>{i}</li>
-                        ))}
-                      </ul>
-                    )}
+                  </div>
+                )}
+                {insightSummaries.map((summary) => (
+                  <div className="panel insight-card" key={summary.statementId}>
+                    <div className="panel-head">
+                      <h3>{summary.month ?? summary.statementId.slice(0, 8)}</h3>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost"
+                        onClick={() => {
+                          setSection("dashboard");
+                          void openStatement(summary.statementId);
+                        }}
+                      >
+                        Open
+                      </button>
+                    </div>
+                    <div className="panel-body">
+                      <div className="summary-grid">
+                        <div className="metric">
+                          <span>Net</span>
+                          <strong>{formatMoney(summary.netBalance, summary.currency)}</strong>
+                        </div>
+                        <div className="metric">
+                          <span>Expenses</span>
+                          <strong>
+                            {formatMoney(summary.totalExpenses, summary.currency)}
+                          </strong>
+                        </div>
+                      </div>
+                      {summary.spendingInsights && summary.spendingInsights.length > 0 && (
+                        <ul className="insights-list compact">
+                          {summary.spendingInsights.slice(0, 2).map((i) => (
+                            <li key={i}>{i}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {section === "api-keys" && (
+            <section className="api-keys-layout">
+              <div className="panel">
+                <div className="panel-head">
+                  <h3>Mint key</h3>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={busy}
+                    onClick={() => void onMintApiKey()}
+                  >
+                    {busy ? "Working…" : "Mint API key"}
+                  </button>
+                </div>
+                <div className="panel-body">
+                  <p className="api-keys-help">
+                    Use the secret as <code>X-Api-Key</code> for MCP and agents. It is scoped to
+                    your Workspace and cannot be recovered after you leave this page.
+                  </p>
+                  {mintedSecret && (
+                    <div className="secret-reveal">
+                      <strong>Copy this key now</strong>
+                      <code className="secret-value">{mintedSecret.apiKey}</code>
+                      <div className="secret-actions">
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          onClick={() => void copyText(mintedSecret.apiKey, "API key copied")}
+                        >
+                          Copy
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-ghost"
+                          onClick={() => setSection("mcp-setup")}
+                        >
+                          MCP setup
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-ghost"
+                          onClick={() => setMintedSecret(null)}
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="panel">
+                <div className="panel-head">
+                  <h3>Workspace keys</h3>
+                  <span className="panel-meta">{apiKeys.length} keys</span>
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Prefix</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {apiKeys.length === 0 && (
+                        <tr>
+                          <td colSpan={4}>
+                            <div className="empty-state">
+                              No API keys yet — mint one for Cursor MCP or agent clients.
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      {apiKeys.map((key) => (
+                        <tr key={key.keyId}>
+                          <td>
+                            <code>
+                              {key.prefix}…
+                            </code>
+                          </td>
+                          <td>
+                            <span className={`status-pill status-${key.status === "active" ? "ready" : "failed"}`}>
+                              {key.status}
+                            </span>
+                          </td>
+                          <td>{new Date(key.createdAt).toLocaleString()}</td>
+                          <td className="row-actions">
+                            {key.status === "active" && (
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-danger"
+                                disabled={busy}
+                                onClick={() => void onRevokeApiKey(key.keyId)}
+                              >
+                                Revoke
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {section === "mcp-setup" && (
+            <section className="mcp-setup-layout">
+              <div className="panel">
+                <div className="panel-head">
+                  <h3>Endpoint</h3>
+                </div>
+                <div className="panel-body">
+                  <p className="api-keys-help">
+                    Remote MCP URL from <code>NEXT_PUBLIC_FINLENS_API_URL</code>. The web bundle
+                    never includes an API key — mint one under API keys and paste it into Cursor.
+                  </p>
+                  {!mcpUrl && (
+                    <div className="error-banner">
+                      Set NEXT_PUBLIC_FINLENS_API_URL before building the static export.
+                    </div>
+                  )}
+                  {mcpUrl && (
+                    <div className="mcp-endpoint-row">
+                      <code className="secret-value">{mcpUrl}</code>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() => void copyText(mcpUrl, "MCP URL copied")}
+                      >
+                        Copy URL
+                      </button>
+                    </div>
+                  )}
+                  {apiBaseUrl && (
+                    <p className="mcp-meta">
+                      REST base: <code>{apiBaseUrl}</code>
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="panel">
+                <div className="panel-head">
+                  <h3>Cursor MCP config</h3>
+                  <div className="panel-head-actions">
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={!mcpConfigTemplate}
+                      onClick={() =>
+                        void copyText(mcpConfigTemplate, "Config copied — paste your API key")
+                      }
+                    >
+                      Copy config
+                    </button>
                   </div>
                 </div>
-              ))}
+                <div className="panel-body">
+                  <ol className="mcp-steps">
+                    <li>
+                      Open{" "}
+                      <button
+                        type="button"
+                        className="link-btn"
+                        onClick={() => setSection("api-keys")}
+                      >
+                        API keys
+                      </button>{" "}
+                      and mint a Workspace key (copy the secret once).
+                    </li>
+                    <li>
+                      Paste the JSON below into Cursor MCP settings, then replace{" "}
+                      <code>{MCP_KEY_PLACEHOLDER}</code> with the minted key.
+                    </li>
+                    <li>Agents then share the same Workspace Statements as this dashboard.</li>
+                  </ol>
+                  {mcpConfigTemplate && (
+                    <pre className="mcp-config-block">{mcpConfigTemplate}</pre>
+                  )}
+                  {mintedSecret && mcpUrl && (
+                    <div className="secret-reveal">
+                      <strong>One-time: copy config with this session’s minted key</strong>
+                      <p className="api-keys-help">
+                        Only available while the mint reveal is open. Closing dismisses the secret
+                        from the page; it is never stored in the build.
+                      </p>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() =>
+                          void copyText(
+                            buildMcpConfigJson(mcpUrl, mintedSecret.apiKey),
+                            "Config with key copied",
+                          )
+                        }
+                      >
+                        Copy config with key
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
             </section>
           )}
         </main>

@@ -10,9 +10,14 @@
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "cdk:synth": "npm run synth -w infra",
-    "cdk:deploy:dev": "npm run deploy:dev -w infra"
+    "cdk:deploy:dev": "npm run deploy:dev -w infra",
+    "cdk:deploy:prod": "npm run deploy:prod -w infra",
+    "cdk:check:prod": "npm run check:prod -w infra"
   },
   "engines": {
     "node": ">=20"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.7"
   }
 }

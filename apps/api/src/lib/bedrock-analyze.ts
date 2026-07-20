@@ -10,24 +10,20 @@ import {
   parseAnalysisJson,
   type AnalysisResult,
 } from "./analysis-prompt";
-import { MAX_CSV_TEXT_CHARS } from "./file-validation";
-import type { StatementFileType } from "./file-validation";
+import { modelIdFor } from "./bedrock-model";
+import { MAX_CSV_TEXT_CHARS, type StatementFileType } from "./file-validation";
 
 const bedrock = new BedrockRuntimeClient({});
 
-async function converse(content: ContentBlock[]): Promise<AnalysisResult> {
-  const modelId = process.env.BEDROCK_MODEL_ID;
-  if (!modelId) {
-    throw new Error("BEDROCK_MODEL_ID is not configured");
-  }
-
+async function converse(content: ContentBlock[], modelId: string): Promise<AnalysisResult> {
   const response = await bedrock.send(
     new ConverseCommand({
       modelId,
       system: [{ text: ANALYSIS_SYSTEM_PROMPT }],
       messages: [{ role: "user", content }],
       inferenceConfig: {
-        maxTokens: 4096,
+        // Higher budget so line-item extracts fit alongside summary + insights.
+        maxTokens: 8192,
         temperature: 0.1,
       },
     }),
@@ -42,16 +38,19 @@ async function converse(content: ContentBlock[]): Promise<AnalysisResult> {
 }
 
 export async function analyzeStatementPdf(pdfBytes: Uint8Array): Promise<AnalysisResult> {
-  return converse([
-    {
-      document: {
-        format: "pdf",
-        name: "bank-statement",
-        source: { bytes: pdfBytes },
+  return converse(
+    [
+      {
+        document: {
+          format: "pdf",
+          name: "bank-statement",
+          source: { bytes: pdfBytes },
+        },
       },
-    },
-    { text: ANALYSIS_USER_PROMPT },
-  ]);
+      { text: ANALYSIS_USER_PROMPT },
+    ],
+    modelIdFor("pdf"),
+  );
 }
 
 export async function analyzeStatementCsv(csvBytes: Uint8Array): Promise<AnalysisResult> {
@@ -60,9 +59,10 @@ export async function analyzeStatementCsv(csvBytes: Uint8Array): Promise<Analysi
     text = `${text.slice(0, MAX_CSV_TEXT_CHARS)}\n...[truncated]`;
   }
 
-  return converse([
-    { text: `${ANALYSIS_CSV_PREFIX}${text}\n\n${ANALYSIS_USER_PROMPT}` },
-  ]);
+  return converse(
+    [{ text: `${ANALYSIS_CSV_PREFIX}${text}\n\n${ANALYSIS_USER_PROMPT}` }],
+    modelIdFor("csv"),
+  );
 }
 
 export async function analyzeStatementFile(

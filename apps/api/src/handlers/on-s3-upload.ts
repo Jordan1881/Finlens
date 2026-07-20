@@ -1,7 +1,8 @@
-import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
+import { ExecutionAlreadyExists, SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { S3Event, S3Handler } from "aws-lambda";
+import { checkConcurrentAnalysisQuota } from "../lib/quota-service";
 
 const sfn = new SFNClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -27,19 +28,62 @@ export const handler: S3Handler = async (event: S3Event) => {
     const now = new Date().toISOString();
 
     const existing = await ddb.send(
-      new QueryCommand({
+      new GetCommand({
         TableName: tableName,
-        IndexName: "byStatementId",
-        KeyConditionExpression: "statementId = :statementId",
-        ExpressionAttributeValues: { ":statementId": statementId },
-        Limit: 1,
+        Key: { tenantId, statementId },
       }),
     );
 
-    const item = existing.Items?.[0];
-    if (!item || item.tenantId !== tenantId) {
+    if (!existing.Item) {
       console.warn("No matching statement record for", key);
       continue;
+    }
+
+    const currentStatus = existing.Item.status as string | undefined;
+
+    // Duplicate S3 events for an already-processing row should still attempt StartExecution
+    // (idempotent via execution name) without re-checking quotas.
+    if (currentStatus !== "processing") {
+      // Concurrent gate: `processing` counts toward the Workspace limit (#23).
+      // Deny here so we do not start Bedrock when at capacity.
+      const quotaError = await checkConcurrentAnalysisQuota(tenantId);
+      if (quotaError) {
+        try {
+          await ddb.send(
+            new UpdateCommand({
+              TableName: tableName,
+              Key: { tenantId, statementId },
+              UpdateExpression:
+                "SET #status = :failed, updatedAt = :updatedAt, errorMessage = :errorMessage",
+              ConditionExpression:
+                "#status <> :ready AND #status <> :failed AND #status <> :processing",
+              ExpressionAttributeNames: { "#status": "status" },
+              ExpressionAttributeValues: {
+                ":failed": "failed",
+                ":ready": "ready",
+                ":processing": "processing",
+                ":updatedAt": now,
+                ":errorMessage": `${quotaError.code}: ${quotaError.message}. ${quotaError.nextStep}`,
+              },
+            }),
+          );
+        } catch (error) {
+          // Condition failed → row already moved; ignore.
+          if (
+            !error ||
+            typeof error !== "object" ||
+            (error as { name?: string }).name !== "ConditionalCheckFailedException"
+          ) {
+            throw error;
+          }
+        }
+        console.warn("Concurrent analysis quota exceeded; statement marked failed", {
+          tenantId,
+          statementId,
+          code: quotaError.code,
+        });
+        continue;
+      }
     }
 
     await ddb.send(
@@ -55,11 +99,22 @@ export const handler: S3Handler = async (event: S3Event) => {
       }),
     );
 
-    await sfn.send(
-      new StartExecutionCommand({
-        stateMachineArn,
-        input: JSON.stringify({ tenantId, statementId, bucket, key }),
-      }),
-    );
+    try {
+      // Naming the execution after the statement makes duplicate S3 events a no-op:
+      // Step Functions rejects a second execution with the same name for 90 days.
+      await sfn.send(
+        new StartExecutionCommand({
+          stateMachineArn,
+          name: statementId,
+          input: JSON.stringify({ tenantId, statementId, bucket, key }),
+        }),
+      );
+    } catch (error) {
+      if (error instanceof ExecutionAlreadyExists) {
+        console.warn("Analysis already started for", statementId);
+        continue;
+      }
+      throw error;
+    }
   }
 };

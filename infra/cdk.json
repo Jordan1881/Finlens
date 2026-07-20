@@ -9,6 +9,7 @@
     "account": "575838736040",
     "region": "eu-west-1",
     "bedrockModelId": "eu.anthropic.claude-sonnet-4-6",
+    "bedrockModelIdCsv": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
     "devApiKey": "finlens-dev-local-key",
     "cognitoUserPoolId": "eu-west-1_8yJv9ul6G",
     "cognitoClientId": "306iqv4ugg8jn07pc2jvsle1tc",

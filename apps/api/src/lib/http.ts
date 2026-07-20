@@ -32,9 +32,38 @@ export function badRequest(
 }
 
 export function unauthorized(message = "Unauthorized"): APIGatewayProxyResultV2 {
-  return structuredError(401, "UNAUTHORIZED", message, false, "Provide a valid X-Api-Key header");
+  return structuredError(
+    401,
+    "UNAUTHORIZED",
+    message,
+    false,
+    "Provide Authorization: Bearer <Cognito access token> or X-Api-Key",
+  );
 }
 
-export function notFound(message: string): APIGatewayProxyResultV2 {
-  return structuredError(404, "NOT_FOUND", message, false, "Check the statementId or upload a new statement");
+export function forbidden(message = "Forbidden"): APIGatewayProxyResultV2 {
+  return structuredError(
+    403,
+    "FORBIDDEN",
+    message,
+    false,
+    "Sign in as a Workspace owner",
+  );
+}
+
+export function notFound(
+  message: string,
+  nextStep = "Check statementId via list_statements / GET /v1/statements, or upload a new statement",
+): APIGatewayProxyResultV2 {
+  return structuredError(404, "NOT_FOUND", message, false, nextStep);
+}
+
+/** Agent-readable over-quota denial (issue #23). */
+export function tooManyRequests(
+  code: string,
+  message: string,
+  nextStep: string,
+  retryable = true,
+): APIGatewayProxyResultV2 {
+  return structuredError(429, code, message, retryable, nextStep);
 }
