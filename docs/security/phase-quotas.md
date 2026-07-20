@@ -7,7 +7,7 @@ Hard per-Workspace cost bounds so runaway agents cannot burn Bedrock budget unno
 | Limit | Default | Counter / source of truth |
 |-------|---------|---------------------------|
 | Uploads / UTC day | **20** | DynamoDB `WorkspacesTable` item `WORKSPACE#<id>` / `QUOTA#uploads#YYYY-MM-DD` (`count`, TTL `expiresAt`) |
-| Asks / UTC day | **100** | Same table, `QUOTA#asks#YYYY-MM-DD` (helpers ready for `ask_statement` #26; not enforced on a tool yet) |
+| Asks / UTC day | **100** | Same table, `QUOTA#asks#YYYY-MM-DD` (enforced by `ask_statement` / `POST .../ask` via `consumeAskQuota`) |
 | Concurrent Analyses | **2** | Count of Statements with `status = processing` for that Workspace |
 
 Optional overrides: Workspace `META.quotas` (`uploadsPerDay`, `asksPerDay`, `concurrentAnalyses`) and env `QUOTA_UPLOADS_PER_DAY` / `QUOTA_ASKS_PER_DAY` / `QUOTA_CONCURRENT_ANALYSES`.
@@ -52,6 +52,5 @@ npm test -w @finlens/api
 ## Out of scope
 
 - Paid tiers / billing (#16)
-- Ask tool enforcement wiring (#26 — use `consumeAskQuota`)
 - Per-key quotas (limits are Workspace-scoped)
 - Perfect serialization of concurrent Analysis starts

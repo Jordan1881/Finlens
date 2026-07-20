@@ -145,6 +145,62 @@ export interface DeleteStatementResponse {
   deleted: true;
 }
 
+/** Category mix for one Statement — from summary topCategories or extract rollup. */
+export interface CategoryBreakdownItem {
+  category: string;
+  amount: number;
+  /** Share of totalCategorized (0–1) when total > 0. */
+  share?: number;
+}
+
+export interface CategoryBreakdownResponse {
+  statementId: string;
+  status: StatementStatus;
+  currency?: string;
+  month?: string | null;
+  /** summary = financialSummary.topCategories; extract = rolled-up line items. */
+  source: "summary" | "extract";
+  categories: CategoryBreakdownItem[];
+  totalCategorized: number;
+}
+
+export interface StatementCompareSide {
+  statementId: string;
+  month: string | null;
+  currency: string;
+  totalIncome: number;
+  totalExpenses: number;
+  netBalance: number;
+  topCategories: Array<{ category: string; amount: number }>;
+}
+
+export interface CategoryDiff {
+  category: string;
+  amountA: number;
+  amountB: number;
+  /** B − A */
+  delta: number;
+}
+
+export interface CompareStatementsResponse {
+  a: StatementCompareSide;
+  b: StatementCompareSide;
+  deltas: {
+    totalIncome: number;
+    totalExpenses: number;
+    netBalance: number;
+    categories: CategoryDiff[];
+  };
+}
+
+export interface AskStatementResponse {
+  statementId: string;
+  question: string;
+  answer: string;
+  /** Which Analysis layers were sent to the model (stable tool name either way). */
+  contextUsed: "summary" | "summary+extract";
+}
+
 export interface StructuredError {
   code: string;
   message: string;

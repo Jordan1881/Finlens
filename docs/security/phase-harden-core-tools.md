@@ -32,7 +32,7 @@ Seam and adapters return `{ code, message, retryable, nextStep }` on validation,
 
 ## Out of scope
 
-- Ask / compare tools (#26)
+- Insight / compare UI (#28)
 - Changing Statement primary key design (still `tenantId` + `statementId`)
 
 ## Verification

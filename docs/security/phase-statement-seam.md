@@ -20,8 +20,7 @@ Cross-tenant and missing resources are indistinguishable at the API: both return
 
 ### Out of scope (later phases)
 
-- Power-tool / elevated agent capabilities
-- Ask tool (#26) — ask daily quota helpers exist in `quota-service.ts` (`consumeAskQuota`)
+- Power-tool / elevated agent capabilities beyond compare/categories/ask (see `phase-power-tools.md`)
 
 ## Verification
 

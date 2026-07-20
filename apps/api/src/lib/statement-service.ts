@@ -189,7 +189,8 @@ function invalidStatusError(status: string): StructuredError {
   };
 }
 
-async function fetchStatementRecord(
+/** Workspace-scoped Statement load — cross-tenant ids return null (no existence leak). */
+export async function fetchStatementRecord(
   deps: StatementSeamDeps,
   tenantId: string,
   statementId: string,
@@ -218,8 +219,8 @@ export async function putPendingStatement(
   );
 }
 
-/** Load S3-backed extract into the record for detail=full (Workspace-scoped key). */
-async function hydrateTransactionExtract(
+/** Load S3-backed extract into the record for detail=full / power tools (Workspace-scoped key). */
+export async function hydrateTransactionExtract(
   deps: StatementSeamDeps,
   record: StatementRecord,
 ): Promise<StatementRecord> {
@@ -345,7 +346,7 @@ export async function listStatementsWith(
   if (params.nextToken) {
     const decoded = decodeListCursor(params.nextToken, tenantId);
     if ("code" in decoded) {
-      return decoded;
+      return decoded as StructuredError;
     }
     exclusiveStartKey = decoded;
   }

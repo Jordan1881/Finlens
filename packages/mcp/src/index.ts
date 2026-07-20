@@ -3,6 +3,9 @@ export const FINLENS_MCP_TOOLS = [
   "get_statement",
   "list_statements",
   "delete_statement",
+  "compare_statements",
+  "get_category_breakdown",
+  "ask_statement",
 ] as const;
 
 export type FinlensMcpTool = (typeof FINLENS_MCP_TOOLS)[number];
@@ -14,11 +17,16 @@ Workflow:
 2. get_statement — poll every ~15 seconds until status is ready or failed. Use detail=summary unless you need transactionExtract (detail=full only).
 3. list_statements — find recent uploads (newest by createdAt). Optional limit, nextToken, status. Follow nextToken when present.
 4. delete_statement — permanently remove a statement and its file
+5. compare_statements — diff income/expense/net/categories for two ready statementIds in this Workspace
+6. get_category_breakdown — spending mix for one statement (uses extract when available, else summary topCategories — same tool name either way)
+7. ask_statement — natural-language question about one statement (starts from summary+insights; hydrates transaction extract when line-item detail is needed). Counts against daily ask quota.
 
 Supported formats: PDF (.pdf) and comma-separated bank exports (.csv).
 
 Defaults:
 - Use detail=summary unless the user needs every field
+- Prefer compare_statements / get_category_breakdown / ask_statement over dumping full extracts
 - Do not ask the user for API keys (auth is handled by MCP client config until OAuth is enabled)
 
-When status is processing, wait and poll again. When failed, read error.nextStep and retry upload if retryable.`;
+When status is processing, wait and poll again. When failed, read error.nextStep and retry upload if retryable.
+Cross-Workspace statementIds return not found — only use ids from this Workspace.`;

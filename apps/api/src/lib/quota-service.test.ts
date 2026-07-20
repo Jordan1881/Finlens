@@ -157,7 +157,7 @@ describe("daily upload / ask counters", () => {
     assert.equal(store.get(`${keys.pk}#${keys.sk}`)?.count, 2);
   });
 
-  it("ask counter is independent and ready for later tools", async () => {
+  it("ask counter is independent of uploads", async () => {
     const { deps } = createQuotaMemory();
     deps.limits = { asksPerDay: 1, uploadsPerDay: 5 };
 

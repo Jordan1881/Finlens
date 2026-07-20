@@ -236,7 +236,7 @@ export async function consumeUploadQuota(
 
 /**
  * Atomically consume one ask against the Workspace daily counter.
- * Ready for ask_statement (#26); not wired to a handler yet.
+ * Wired by ask_statement / POST /v1/statements/{id}/ask (#26).
  */
 export async function consumeAskQuota(
   workspaceId: string,

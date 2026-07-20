@@ -4,6 +4,11 @@ import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda
 import { z } from "zod";
 import { FINLENS_MCP_INSTRUCTIONS } from "@finlens/mcp";
 import { mcpUnauthorized, resolveTenantIdForMcp } from "../lib/auth";
+import {
+  askStatement,
+  compareStatements,
+  getCategoryBreakdown,
+} from "../lib/statement-power-tools";
 import { getStatement, deleteStatement, listStatements, uploadStatement } from "../lib/statement-service";
 
 function toRequest(event: APIGatewayProxyEventV2): {
@@ -264,6 +269,92 @@ function createMcpServer(tenantId: string): McpServer {
         );
       }
 
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "compare_statements",
+    {
+      description:
+        "Compare two ready statements in this Workspace: income, expenses, net, and category diffs. Uses stored Analysis (summary; extract rollup when present) without changing tool names as extracts improve.",
+      inputSchema: {
+        statementIdA: z.string().describe("First statement ID (baseline)"),
+        statementIdB: z.string().describe("Second statement ID (compare against A)"),
+      },
+    },
+    async ({ statementIdA, statementIdB }) => {
+      const result = await compareStatements(tenantId, statementIdA, statementIdB);
+      if (!result) {
+        return toolError(
+          "NOT_FOUND",
+          "Statement not found",
+          false,
+          "Check both statementIds via list_statements (same Workspace only)",
+        );
+      }
+      if ("code" in result) {
+        return toolError(result.code, result.message, result.retryable, result.nextStep);
+      }
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "get_category_breakdown",
+    {
+      description:
+        "Category spending breakdown for one ready statement. Prefers transaction extract rollup when available; otherwise uses financialSummary.topCategories. Same tool name either way.",
+      inputSchema: {
+        statementId: z.string().describe("Statement ID from upload_statement / list_statements"),
+      },
+    },
+    async ({ statementId }) => {
+      const result = await getCategoryBreakdown(tenantId, statementId);
+      if (!result) {
+        return toolError(
+          "NOT_FOUND",
+          "Statement not found",
+          false,
+          "Check statementId via list_statements or upload a new statement",
+        );
+      }
+      if ("code" in result) {
+        return toolError(result.code, result.message, result.retryable, result.nextStep);
+      }
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "ask_statement",
+    {
+      description:
+        "Ask a natural-language question about one ready statement. Starts from financialSummary + insights; hydrates transaction extract when line-item detail is needed. Consumes Workspace daily ask quota.",
+      inputSchema: {
+        statementId: z.string().describe("Statement ID to ask about"),
+        question: z.string().describe("Natural-language question about the statement"),
+      },
+    },
+    async ({ statementId, question }) => {
+      const result = await askStatement(tenantId, statementId, question);
+      if (!result) {
+        return toolError(
+          "NOT_FOUND",
+          "Statement not found",
+          false,
+          "Check statementId via list_statements or upload a new statement",
+        );
+      }
+      if ("code" in result) {
+        return toolError(result.code, result.message, result.retryable, result.nextStep);
+      }
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };

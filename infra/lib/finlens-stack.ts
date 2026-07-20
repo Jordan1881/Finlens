@@ -214,7 +214,41 @@ export class FinlensStack extends cdk.Stack {
       entry: path.join(repoRoot, "apps/api/src/handlers/mcp-server.ts"),
       handler: "handler",
       runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: cdk.Duration.seconds(30),
+      // Ask tool may call Bedrock; keep headroom beyond upload/get paths.
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 512,
+      environment: lambdaEnv,
+      logRetention: logs.RetentionDays.ONE_MONTH,
+      bundling: { minify: true, sourceMap: true, target: "node20" },
+    });
+
+    const compareStatementsFn = new NodejsFunction(this, "CompareStatementsFn", {
+      entry: path.join(repoRoot, "apps/api/src/handlers/compare-statements.ts"),
+      handler: "handler",
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 256,
+      environment: lambdaEnv,
+      logRetention: logs.RetentionDays.ONE_MONTH,
+      bundling: { minify: true, sourceMap: true, target: "node20" },
+    });
+
+    const getCategoryBreakdownFn = new NodejsFunction(this, "GetCategoryBreakdownFn", {
+      entry: path.join(repoRoot, "apps/api/src/handlers/get-category-breakdown.ts"),
+      handler: "handler",
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 256,
+      environment: lambdaEnv,
+      logRetention: logs.RetentionDays.ONE_MONTH,
+      bundling: { minify: true, sourceMap: true, target: "node20" },
+    });
+
+    const askStatementFn = new NodejsFunction(this, "AskStatementFn", {
+      entry: path.join(repoRoot, "apps/api/src/handlers/ask-statement.ts"),
+      handler: "handler",
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(60),
       memorySize: 512,
       environment: lambdaEnv,
       logRetention: logs.RetentionDays.ONE_MONTH,
@@ -316,12 +350,21 @@ export class FinlensStack extends cdk.Stack {
     statementsBucket.grantRead(mcpServerFn);
     statementsBucket.grantDelete(deleteStatementFn);
     statementsBucket.grantDelete(mcpServerFn);
+    statementsTable.grantReadData(compareStatementsFn);
+    statementsTable.grantReadData(getCategoryBreakdownFn);
+    statementsTable.grantReadData(askStatementFn);
+    statementsBucket.grantRead(compareStatementsFn);
+    statementsBucket.grantRead(getCategoryBreakdownFn);
+    statementsBucket.grantRead(askStatementFn);
     apiKeysTable.grantReadData(createStatementFn);
     apiKeysTable.grantReadData(getStatementFn);
     apiKeysTable.grantReadData(listStatementsFn);
     apiKeysTable.grantReadData(deleteStatementFn);
     apiKeysTable.grantReadData(uploadStatementDirectFn);
     apiKeysTable.grantReadData(mcpServerFn);
+    apiKeysTable.grantReadData(compareStatementsFn);
+    apiKeysTable.grantReadData(getCategoryBreakdownFn);
+    apiKeysTable.grantReadData(askStatementFn);
     apiKeysTable.grantReadWriteData(apiKeysFn);
     workspacesTable.grantReadWriteData(createStatementFn);
     workspacesTable.grantReadWriteData(getStatementFn);
@@ -329,17 +372,25 @@ export class FinlensStack extends cdk.Stack {
     workspacesTable.grantReadWriteData(deleteStatementFn);
     workspacesTable.grantReadWriteData(uploadStatementDirectFn);
     workspacesTable.grantReadWriteData(mcpServerFn);
+    workspacesTable.grantReadWriteData(compareStatementsFn);
+    workspacesTable.grantReadWriteData(getCategoryBreakdownFn);
+    workspacesTable.grantReadWriteData(askStatementFn);
     workspacesTable.grantReadWriteData(apiKeysFn);
 
-    analyzeStatementFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["bedrock:InvokeModel", "bedrock:Converse"],
-        resources: [
-          "arn:aws:bedrock:*::foundation-model/*",
-          "arn:aws:bedrock:*:*:inference-profile/*",
-        ],
-      }),
-    );
+    const bedrockActions = ["bedrock:InvokeModel", "bedrock:Converse"] as const;
+    const bedrockResources = [
+      "arn:aws:bedrock:*::foundation-model/*",
+      "arn:aws:bedrock:*:*:inference-profile/*",
+    ];
+    // Separate PolicyStatement instances — CDK forbids attaching one statement to multiple roles.
+    for (const fn of [analyzeStatementFn, mcpServerFn, askStatementFn]) {
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: [...bedrockActions],
+          resources: bedrockResources,
+        }),
+      );
+    }
 
     const analyzeTask = new tasks.LambdaInvoke(this, "AnalyzeStatementTask", {
       lambdaFunction: analyzeStatementFn,
@@ -541,9 +592,33 @@ export class FinlensStack extends cdk.Stack {
     });
 
     httpApi.addRoutes({
+      path: "/v1/statements/compare",
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration(
+        "CompareStatementsIntegration",
+        compareStatementsFn,
+      ),
+    });
+
+    httpApi.addRoutes({
       path: "/v1/statements/{statementId}",
       methods: [apigwv2.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration("GetStatementIntegration", getStatementFn),
+    });
+
+    httpApi.addRoutes({
+      path: "/v1/statements/{statementId}/categories",
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration(
+        "GetCategoryBreakdownIntegration",
+        getCategoryBreakdownFn,
+      ),
+    });
+
+    httpApi.addRoutes({
+      path: "/v1/statements/{statementId}/ask",
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration("AskStatementIntegration", askStatementFn),
     });
 
     httpApi.addRoutes({

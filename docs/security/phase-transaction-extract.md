@@ -1,6 +1,6 @@
 # Phase: Transaction extract on analyze
 
-Security controls and residual risks for persisting a structured transaction extract when Analysis completes (GitHub #24). Ask/compare tools (#26) are out of scope for this phase.
+Security controls and residual risks for persisting a structured transaction extract when Analysis completes (GitHub #24). Downstream ask/compare/category tools are covered in `phase-power-tools.md` (#26).
 
 ## What this phase covers
 
@@ -27,9 +27,10 @@ The extract is model-produced structured data, not a verified ledger. Downstream
 
 ## Explicit follow-ups (out of scope)
 
-- Ask / compare / category tools that *consume* the extract (#26)
 - Redacting merchant PII from extracts for export
 - Separate KMS key or retention for extract objects vs source files
+
+Ask / compare / category tools that consume the extract are documented in `phase-power-tools.md` (#26).
 
 ## Residual risks
 
