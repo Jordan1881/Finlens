@@ -1,33 +1,50 @@
-import { DeleteObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
+  PutCommand,
   QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type {
   DirectUploadResponse,
   ListStatementsResponse,
-  StatementListItem,
   StatementRecord,
   StatementStatusResponse,
   StatementSummaryView,
+  StructuredError,
 } from "@finlens/domain";
-import type { StructuredError } from "@finlens/domain";
 import {
   detectFileType,
   validateStatementBytes,
   type StatementFileType,
-} from "./file-validation";
-import { createStatementAndUploadFile } from "./statements";
-
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const s3 = new S3Client({});
+} from "./file-validation.ts";
+import {
+  buildPendingStatement,
+  contentTypeFor,
+} from "./statement-record.ts";
+import {
+  toFullStatusResponse,
+  toListItem,
+  toSummaryView,
+} from "./statement-views.ts";
 
 const LIST_LIMIT = 20;
 
-function tableName(): string {
+/** Minimal command sender — lets tests inject fakes without AWS SDK. */
+export interface CommandClient {
+  send(command: unknown): Promise<unknown>;
+}
+
+export interface StatementSeamDeps {
+  ddb: CommandClient;
+  s3: CommandClient;
+  tableName: string;
+  bucketName: string;
+}
+
+function envTableName(): string {
   const name = process.env.STATEMENTS_TABLE;
   if (!name) {
     throw new Error("STATEMENTS_TABLE is not configured");
@@ -35,7 +52,7 @@ function tableName(): string {
   return name;
 }
 
-function bucketName(): string {
+function envBucketName(): string {
   const name = process.env.STATEMENTS_BUCKET;
   if (!name) {
     throw new Error("STATEMENTS_BUCKET is not configured");
@@ -43,108 +60,111 @@ function bucketName(): string {
   return name;
 }
 
-function toSummaryView(record: StatementRecord): StatementSummaryView {
-  const view: StatementSummaryView = {
-    statementId: record.statementId,
-    status: record.status,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
+const defaultDdb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const defaultS3 = new S3Client({});
+
+function defaultDeps(): StatementSeamDeps {
+  return {
+    ddb: defaultDdb,
+    s3: defaultS3,
+    tableName: envTableName(),
+    bucketName: envBucketName(),
   };
-
-  if (record.status === "failed" && record.errorMessage) {
-    view.error = {
-      code: "ANALYSIS_FAILED",
-      message: record.errorMessage,
-      retryable: true,
-      nextStep: "Call upload_statement again with the PDF or CSV",
-    };
-  }
-
-  if (record.status === "ready" && record.financialSummary) {
-    const summary = record.financialSummary;
-    view.currency = summary.currency;
-    view.month = summary.month;
-    view.totalIncome = summary.totalIncome;
-    view.totalExpenses = summary.totalExpenses;
-    view.netBalance = summary.netBalance;
-    view.topCategories = summary.topCategories.slice(0, 3);
-    view.spendingInsights = record.spendingInsights;
-  }
-
-  return view;
 }
 
 async function fetchStatementRecord(
+  deps: StatementSeamDeps,
   tenantId: string,
   statementId: string,
 ): Promise<StatementRecord | null> {
-  const result = await ddb.send(
+  const result = (await deps.ddb.send(
     new GetCommand({
-      TableName: tableName(),
+      TableName: deps.tableName,
       Key: { tenantId, statementId },
+    }),
+  )) as { Item?: StatementRecord };
+
+  return result.Item ?? null;
+}
+
+/** Persist a new pending Statement row (presigned create + direct upload). */
+export async function putPendingStatement(
+  deps: StatementSeamDeps,
+  record: StatementRecord,
+): Promise<void> {
+  // DynamoDB TTL (epoch seconds); aligns with S3 90-day object expiration.
+  const expiresAt = Math.floor(Date.now() / 1000) + 90 * 24 * 60 * 60;
+  await deps.ddb.send(
+    new PutCommand({
+      TableName: deps.tableName,
+      Item: { ...record, expiresAt },
+      ConditionExpression: "attribute_not_exists(statementId)",
+    }),
+  );
+}
+
+export async function createStatementAndUploadFile(
+  deps: StatementSeamDeps,
+  params: {
+    tenantId: string;
+    fileBytes: Uint8Array;
+    fileType: StatementFileType;
+  },
+): Promise<{ statementId: string; s3Key: string; record: StatementRecord }> {
+  const { statementId, s3Key, record } = buildPendingStatement({
+    tenantId: params.tenantId,
+    sourceFormat: params.fileType,
+  });
+
+  await putPendingStatement(deps, record);
+
+  await deps.s3.send(
+    new PutObjectCommand({
+      Bucket: deps.bucketName,
+      Key: s3Key,
+      Body: params.fileBytes,
+      ContentType: contentTypeFor(params.fileType),
     }),
   );
 
-  const record = result.Item as StatementRecord | undefined;
-  return record ?? null;
+  return { statementId, s3Key, record };
 }
 
-export async function listStatements(tenantId: string): Promise<ListStatementsResponse> {
-  const result = await ddb.send(
+export async function listStatementsWith(
+  deps: StatementSeamDeps,
+  tenantId: string,
+): Promise<ListStatementsResponse> {
+  const result = (await deps.ddb.send(
     new QueryCommand({
-      TableName: tableName(),
+      TableName: deps.tableName,
       KeyConditionExpression: "tenantId = :tenantId",
       ExpressionAttributeValues: { ":tenantId": tenantId },
       ScanIndexForward: false,
       Limit: LIST_LIMIT,
     }),
-  );
+  )) as { Items?: StatementRecord[] };
 
-  const statements: StatementListItem[] = ((result.Items ?? []) as StatementRecord[]).map(
-    (record) => ({
-      statementId: record.statementId,
-      status: record.status,
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
-      month: record.financialSummary?.month ?? null,
-      sourceFormat: record.sourceFormat,
-    }),
-  );
-
+  const statements = (result.Items ?? []).map(toListItem);
   return { statements, count: statements.length };
 }
 
-export async function getStatement(
+export async function getStatementWith(
+  deps: StatementSeamDeps,
   tenantId: string,
   statementId: string,
   detail: "summary" | "full" = "summary",
 ): Promise<StatementSummaryView | StatementStatusResponse | null> {
-  const record = await fetchStatementRecord(tenantId, statementId);
+  const record = await fetchStatementRecord(deps, tenantId, statementId);
+  // Wrong-tenant or missing key both yield null — never leak cross-tenant existence.
   if (!record) {
     return null;
   }
 
-  if (detail === "summary") {
-    return toSummaryView(record);
-  }
-
-  const response: StatementStatusResponse = {
-    statementId: record.statementId,
-    status: record.status,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-    errorMessage: record.errorMessage,
-  };
-
-  if (record.status === "ready") {
-    response.financialSummary = record.financialSummary;
-    response.spendingInsights = record.spendingInsights;
-  }
-
-  return response;
+  return detail === "summary" ? toSummaryView(record) : toFullStatusResponse(record);
 }
 
-export async function uploadStatement(
+export async function uploadStatementWith(
+  deps: StatementSeamDeps,
   tenantId: string,
   fileBytes: Uint8Array,
   filename?: string,
@@ -169,12 +189,10 @@ export async function uploadStatement(
     };
   }
 
-  const { statementId, s3Key } = await createStatementAndUploadFile({
+  const { statementId, s3Key } = await createStatementAndUploadFile(deps, {
     tenantId,
     fileBytes,
     fileType,
-    bucket: bucketName(),
-    tableName: tableName(),
   });
 
   return {
@@ -184,30 +202,64 @@ export async function uploadStatement(
   };
 }
 
-export async function deleteStatement(
+export async function deleteStatementWith(
+  deps: StatementSeamDeps,
   tenantId: string,
   statementId: string,
 ): Promise<{ statementId: string; deleted: true } | null> {
-  const record = await fetchStatementRecord(tenantId, statementId);
+  const record = await fetchStatementRecord(deps, tenantId, statementId);
   if (!record) {
     return null;
   }
 
   if (record.s3Key) {
-    await s3.send(
+    await deps.s3.send(
       new DeleteObjectCommand({
-        Bucket: bucketName(),
+        Bucket: deps.bucketName,
         Key: record.s3Key,
       }),
     );
   }
 
-  await ddb.send(
+  await deps.ddb.send(
     new DeleteCommand({
-      TableName: tableName(),
+      TableName: deps.tableName,
       Key: { tenantId, statementId },
     }),
   );
 
   return { statementId, deleted: true };
+}
+
+/** Production entry points — resolve env + default AWS clients. */
+export async function listStatements(tenantId: string): Promise<ListStatementsResponse> {
+  return listStatementsWith(defaultDeps(), tenantId);
+}
+
+export async function getStatement(
+  tenantId: string,
+  statementId: string,
+  detail: "summary" | "full" = "summary",
+): Promise<StatementSummaryView | StatementStatusResponse | null> {
+  return getStatementWith(defaultDeps(), tenantId, statementId, detail);
+}
+
+export async function uploadStatement(
+  tenantId: string,
+  fileBytes: Uint8Array,
+  filename?: string,
+): Promise<DirectUploadResponse | StructuredError> {
+  return uploadStatementWith(defaultDeps(), tenantId, fileBytes, filename);
+}
+
+export async function deleteStatement(
+  tenantId: string,
+  statementId: string,
+): Promise<{ statementId: string; deleted: true } | null> {
+  return deleteStatementWith(defaultDeps(), tenantId, statementId);
+}
+
+/** Resolve default seam deps from env (for handlers that need putPendingStatement / create). */
+export function resolveStatementSeamDeps(): StatementSeamDeps {
+  return defaultDeps();
 }

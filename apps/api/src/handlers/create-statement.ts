@@ -1,16 +1,16 @@
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { randomUUID } from "node:crypto";
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
-import type { CreateStatementResponse, StatementRecord } from "@finlens/domain";
+import type { CreateStatementResponse } from "@finlens/domain";
 import { badRequest, json, unauthorized } from "../lib/http";
 import { resolveTenantId } from "../lib/auth";
+import { buildPendingStatement, sourceFormatForContentType } from "../lib/statement-record";
+import {
+  putPendingStatement,
+  resolveStatementSeamDeps,
+} from "../lib/statement-service";
 
 const s3 = new S3Client({});
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-
 const UPLOAD_EXPIRY_SECONDS = 900;
 const ALLOWED_TYPES = new Set(["application/pdf", "text/csv"]);
 
@@ -20,12 +20,6 @@ export async function handler(
   const tenantId = await resolveTenantId(event);
   if (!tenantId) {
     return unauthorized("Missing or invalid X-Api-Key");
-  }
-
-  const bucket = process.env.STATEMENTS_BUCKET;
-  const tableName = process.env.STATEMENTS_TABLE;
-  if (!bucket || !tableName) {
-    return json(500, { error: "Server misconfigured" });
   }
 
   let contentType = "application/pdf";
@@ -51,34 +45,33 @@ export async function handler(
     }
   }
 
-  const isCsv = contentType === "text/csv";
-  const statementId = randomUUID();
-  const now = new Date().toISOString();
-  const ext = isCsv ? "csv" : "pdf";
-  const s3Key = `statements/${tenantId}/${statementId}.${ext}`;
+  const sourceFormat = sourceFormatForContentType(contentType);
+  if (!sourceFormat) {
+    return badRequest(
+      "UNSUPPORTED_FILE_TYPE",
+      "Only application/pdf and text/csv uploads are supported",
+      "Set contentType to application/pdf or text/csv",
+    );
+  }
 
-  const record: StatementRecord = {
+  let deps;
+  try {
+    deps = resolveStatementSeamDeps();
+  } catch {
+    return json(500, { error: "Server misconfigured" });
+  }
+
+  const { statementId, s3Key, record } = buildPendingStatement({
     tenantId,
-    statementId,
-    status: "pending_upload",
-    s3Key,
-    sourceFormat: isCsv ? "csv" : "pdf",
-    createdAt: now,
-    updatedAt: now,
-  };
+    sourceFormat,
+  });
 
-  await ddb.send(
-    new PutCommand({
-      TableName: tableName,
-      Item: record,
-      ConditionExpression: "attribute_not_exists(statementId)",
-    }),
-  );
+  await putPendingStatement(deps, record);
 
   const uploadUrl = await getSignedUrl(
     s3,
     new PutObjectCommand({
-      Bucket: bucket,
+      Bucket: deps.bucketName,
       Key: s3Key,
       ContentType: contentType,
     }),
