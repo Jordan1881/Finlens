@@ -4,12 +4,16 @@ import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cw_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as kms from "aws-cdk-lib/aws-kms";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as destinations from "aws-cdk-lib/aws-lambda-destinations";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as subscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
@@ -36,14 +40,43 @@ export class FinlensStack extends cdk.Stack {
     const cognitoUserPoolId = this.node.tryGetContext("cognitoUserPoolId") as string | undefined;
     const cognitoClientId = this.node.tryGetContext("cognitoClientId") as string | undefined;
     const cognitoDomain = this.node.tryGetContext("cognitoDomain") as string | undefined;
+    const opsAlertEmail = this.node.tryGetContext("opsAlertEmail") as string | undefined;
+
+    const statementsKey = new kms.Key(this, "StatementsKey", {
+      alias: `alias/finlens-${stage}-statements`,
+      description: `SSE-KMS key for Finlens ${stage} statement objects`,
+      enableKeyRotation: true,
+      removalPolicy,
+    });
+
+    // S3 server access log target (ACLs required for the logging service principal).
+    const statementsAccessLogsBucket = new s3.Bucket(this, "StatementsAccessLogsBucket", {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      objectOwnership: s3.ObjectOwnership.OBJECT_WRITER,
+      removalPolicy,
+      autoDeleteObjects: stage !== "prod",
+      lifecycleRules: [{ expiration: cdk.Duration.days(365) }],
+    });
 
     const statementsBucket = new s3.Bucket(this, "StatementsBucket", {
       bucketName: undefined,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: statementsKey,
+      bucketKeyEnabled: true,
       enforceSSL: true,
       removalPolicy,
       autoDeleteObjects: stage !== "prod",
+      serverAccessLogsBucket: statementsAccessLogsBucket,
+      serverAccessLogsPrefix: "statements-access/",
+      lifecycleRules: [
+        {
+          id: "ExpireStatementsAfter90Days",
+          expiration: cdk.Duration.days(90),
+        },
+      ],
     });
 
     const apiKeysTable = new dynamodb.Table(this, "ApiKeysTable", {
@@ -59,6 +92,7 @@ export class FinlensStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: stage === "prod" },
+      timeToLiveAttribute: "expiresAt",
     });
 
     const repoRoot = path.join(__dirname, "../..");
@@ -343,15 +377,25 @@ export class FinlensStack extends cdk.Stack {
     statementsTable.grantReadWriteData(onS3UploadFn);
     stateMachine.grantStartExecution(onS3UploadFn);
 
-    new cloudwatch.Alarm(this, "PipelineFailedAlarm", {
+    const opsAlertsTopic = new sns.Topic(this, "OpsAlertsTopic", {
+      displayName: `finlens-${stage}-ops-alerts`,
+      topicName: `finlens-${stage}-ops-alerts`,
+    });
+    if (opsAlertEmail) {
+      opsAlertsTopic.addSubscription(new subscriptions.EmailSubscription(opsAlertEmail));
+    }
+    const snsAlarmAction = new cw_actions.SnsAction(opsAlertsTopic);
+
+    const pipelineFailedAlarm = new cloudwatch.Alarm(this, "PipelineFailedAlarm", {
       alarmDescription: "Statement analysis executions are failing",
       metric: stateMachine.metricFailed({ period: cdk.Duration.minutes(5) }),
       threshold: 1,
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
+    pipelineFailedAlarm.addAlarmAction(snsAlarmAction);
 
-    new cloudwatch.Alarm(this, "OnS3UploadDlqAlarm", {
+    const onS3UploadDlqAlarm = new cloudwatch.Alarm(this, "OnS3UploadDlqAlarm", {
       alarmDescription: "S3 upload events failed processing and landed in the DLQ",
       metric: onS3UploadDlq.metricApproximateNumberOfMessagesVisible({
         period: cdk.Duration.minutes(5),
@@ -360,6 +404,7 @@ export class FinlensStack extends cdk.Stack {
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
+    onS3UploadDlqAlarm.addAlarmAction(snsAlarmAction);
 
     statementsBucket.addEventNotification(
       s3.EventType.OBJECT_CREATED,
@@ -520,6 +565,10 @@ export class FinlensStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, "Stage", { value: stage });
     new cdk.CfnOutput(this, "StatementsBucketName", { value: statementsBucket.bucketName });
+    new cdk.CfnOutput(this, "StatementsKeyArn", { value: statementsKey.keyArn });
+    new cdk.CfnOutput(this, "StatementsAccessLogsBucketName", {
+      value: statementsAccessLogsBucket.bucketName,
+    });
     new cdk.CfnOutput(this, "ApiKeysTableName", { value: apiKeysTable.tableName });
     new cdk.CfnOutput(this, "StatementsTableName", { value: statementsTable.tableName });
     new cdk.CfnOutput(this, "ApiUrl", { value: httpApi.apiEndpoint });
@@ -527,6 +576,7 @@ export class FinlensStack extends cdk.Stack {
     new cdk.CfnOutput(this, "McpUrl", { value: `${httpApi.apiEndpoint}/mcp` });
     new cdk.CfnOutput(this, "BedrockModelId", { value: bedrockModelId });
     new cdk.CfnOutput(this, "StatementPipelineArn", { value: stateMachine.stateMachineArn });
+    new cdk.CfnOutput(this, "OpsAlertsTopicArn", { value: opsAlertsTopic.topicArn });
     if (stage === "dev" && devApiKey) {
       new cdk.CfnOutput(this, "DevApiKey", { value: devApiKey });
     }

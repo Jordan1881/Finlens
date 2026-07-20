@@ -217,6 +217,15 @@ npm run deploy:dev
 # or: npx cdk deploy FinlensDevStack --profile finlens
 ```
 
+Optional CDK context for ops email alerts (issue #19):
+
+```bash
+# Confirm the SNS subscription email after first deploy
+npx cdk deploy FinlensDevStack -c opsAlertEmail=ops@example.com --profile finlens
+```
+
+If `opsAlertEmail` is omitted, the ops SNS topic and alarm actions are still created; add a subscription later and confirm it in email.
+
 Web build env (injected by `deploy:dev`):
 
 ```bash
