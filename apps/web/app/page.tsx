@@ -47,7 +47,43 @@ type StatementDetail = {
   netBalance?: number;
   topCategories?: Array<{ category: string; amount: number }>;
   spendingInsights?: string[];
-  error?: { message: string; nextStep?: string; code?: string };
+  error?: { message: string; nextStep?: string; code?: string; retryable?: boolean };
+};
+
+type CategoryBreakdown = {
+  statementId: string;
+  status: string;
+  currency?: string;
+  month?: string | null;
+  source: "summary" | "extract";
+  categories: Array<{ category: string; amount: number; share?: number }>;
+  totalCategorized: number;
+};
+
+type CompareSide = {
+  statementId: string;
+  month: string | null;
+  currency: string;
+  totalIncome: number;
+  totalExpenses: number;
+  netBalance: number;
+  topCategories: Array<{ category: string; amount: number }>;
+};
+
+type CompareResult = {
+  a: CompareSide;
+  b: CompareSide;
+  deltas: {
+    totalIncome: number;
+    totalExpenses: number;
+    netBalance: number;
+    categories: Array<{
+      category: string;
+      amountA: number;
+      amountB: number;
+      delta: number;
+    }>;
+  };
 };
 
 function formatMoney(value: number | undefined, currency = "ILS") {
@@ -63,6 +99,43 @@ function formatMoney(value: number | undefined, currency = "ILS") {
   } catch {
     return `${value.toLocaleString()} ${currency}`;
   }
+}
+
+function formatDelta(value: number, currency = "ILS") {
+  const formatted = formatMoney(Math.abs(value), currency);
+  if (value > 0) {
+    return `+${formatted}`;
+  }
+  if (value < 0) {
+    return `−${formatted}`;
+  }
+  return formatted;
+}
+
+function statementLabel(s: { statementId: string; month?: string | null; status?: string }) {
+  const id = `${s.statementId.slice(0, 8)}…`;
+  if (s.month) {
+    return `${s.month} (${id})`;
+  }
+  return id;
+}
+
+function AnalysisErrorBanner({
+  error,
+}: {
+  error: { message: string; nextStep?: string; code?: string };
+}) {
+  return (
+    <div className="error-banner">
+      <strong>{error.message}</strong>
+      {error.code && <p className="error-code">{error.code}</p>}
+      {error.nextStep && (
+        <p className="error-next">
+          <span className="error-next-label">Next step:</span> {error.nextStep}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function isProcessingStatus(status: string) {
@@ -197,12 +270,7 @@ function StatementOverview({ selected }: { selected: StatementDetail }) {
         {selected.month ? ` · ${selected.month}` : ""}
       </p>
 
-      {selected.error && (
-        <div className="error-banner">
-          <strong>{selected.error.message}</strong>
-          {selected.error.nextStep && <p className="error-next">{selected.error.nextStep}</p>}
-        </div>
-      )}
+      {selected.error && <AnalysisErrorBanner error={selected.error} />}
 
       {selected.status === "ready" && (
         <>
@@ -274,7 +342,13 @@ function StatementOverview({ selected }: { selected: StatementDetail }) {
       )}
 
       {selected.status === "failed" && !selected.error && (
-        <div className="error-banner">Analysis failed. Upload the statement again.</div>
+        <div className="error-banner">
+          <strong>Analysis failed.</strong>
+          <p className="error-next">
+            <span className="error-next-label">Next step:</span> Upload the statement again (PDF
+            or CSV).
+          </p>
+        </div>
       )}
     </>
   );
@@ -286,6 +360,14 @@ export default function HomePage() {
   const [selected, setSelected] = useState<StatementDetail | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [insightSummaries, setInsightSummaries] = useState<StatementDetail[]>([]);
+  const [failedInsights, setFailedInsights] = useState<StatementDetail[]>([]);
+  const [compareA, setCompareA] = useState<string>("");
+  const [compareB, setCompareB] = useState<string>("");
+  const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  const [categoryStatementId, setCategoryStatementId] = useState<string>("");
+  const [categoryBreakdown, setCategoryBreakdown] = useState<CategoryBreakdown | null>(null);
+  const [categoryError, setCategoryError] = useState<string | null>(null);
   const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([]);
   const [mintedSecret, setMintedSecret] = useState<MintApiKeyResult | null>(null);
   const [listNextToken, setListNextToken] = useState<string | null>(null);
@@ -386,21 +468,39 @@ export default function HomePage() {
     }
 
     const ready = statements.filter((s) => s.status === "ready").slice(0, 10);
+    const failed = statements.filter((s) => s.status === "failed").slice(0, 10);
+
     if (ready.length === 0) {
       setInsightSummaries([]);
+    }
+    if (failed.length === 0) {
+      setFailedInsights([]);
+    }
+    if (ready.length === 0 && failed.length === 0) {
       return;
     }
 
     let cancelled = false;
     void (async () => {
       try {
-        const summaries = await Promise.all(
-          ready.map((s) =>
-            api<StatementDetail>(`/v1/statements/${s.statementId}?detail=summary`),
+        const [readySummaries, failedSummaries] = await Promise.all([
+          Promise.all(
+            ready.map((s) =>
+              api<StatementDetail>(`/v1/statements/${s.statementId}?detail=summary`),
+            ),
           ),
-        );
+          Promise.all(
+            failed.map((s) =>
+              api<StatementDetail>(`/v1/statements/${s.statementId}?detail=summary`),
+            ),
+          ),
+        ]);
         if (!cancelled) {
-          setInsightSummaries(summaries);
+          setInsightSummaries(readySummaries);
+          setFailedInsights(failedSummaries);
+          setCompareA((prev) => prev || ready[0]?.statementId || "");
+          setCompareB((prev) => prev || ready[1]?.statementId || ready[0]?.statementId || "");
+          setCategoryStatementId((prev) => prev || ready[0]?.statementId || "");
         }
       } catch (e) {
         if (!cancelled) {
@@ -413,6 +513,18 @@ export default function HomePage() {
       cancelled = true;
     };
   }, [authed, section, statements]);
+
+  const readyStatements = useMemo(
+    () => statements.filter((s) => s.status === "ready"),
+    [statements],
+  );
+
+  const categoryMaxAmount = useMemo(() => {
+    if (!categoryBreakdown?.categories.length) {
+      return 0;
+    }
+    return Math.max(...categoryBreakdown.categories.map((c) => c.amount));
+  }, [categoryBreakdown]);
 
   const stats = useMemo(() => {
     const ready = statements.filter((s) => s.status === "ready").length;
@@ -489,6 +601,49 @@ export default function HomePage() {
     }
   }
 
+  async function onCompareStatements() {
+    if (!compareA || !compareB) {
+      setCompareError("Pick two ready statements to compare.");
+      return;
+    }
+    setBusy(true);
+    setCompareError(null);
+    setCompareResult(null);
+    try {
+      const result = await api<CompareResult>("/v1/statements/compare", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ statementIdA: compareA, statementIdB: compareB }),
+      });
+      setCompareResult(result);
+    } catch (e) {
+      setCompareError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onLoadCategories(statementId: string) {
+    if (!statementId) {
+      setCategoryError("Pick a ready statement for the category chart.");
+      return;
+    }
+    setBusy(true);
+    setCategoryError(null);
+    setCategoryBreakdown(null);
+    setCategoryStatementId(statementId);
+    try {
+      const result = await api<CategoryBreakdown>(
+        `/v1/statements/${statementId}/categories`,
+      );
+      setCategoryBreakdown(result);
+    } catch (e) {
+      setCategoryError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onDeleteStatement(id: string) {
     const label = `${id.slice(0, 8)}…`;
     if (
@@ -508,6 +663,20 @@ export default function HomePage() {
         setSelectedId(null);
       }
       setInsightSummaries((rows) => rows.filter((r) => r.statementId !== id));
+      setFailedInsights((rows) => rows.filter((r) => r.statementId !== id));
+      if (compareA === id) {
+        setCompareA("");
+      }
+      if (compareB === id) {
+        setCompareB("");
+      }
+      if (compareResult?.a.statementId === id || compareResult?.b.statementId === id) {
+        setCompareResult(null);
+      }
+      if (categoryStatementId === id) {
+        setCategoryStatementId("");
+        setCategoryBreakdown(null);
+      }
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -728,7 +897,7 @@ export default function HomePage() {
       : section === "statements"
         ? "Browse uploads, open summaries, and track processing status."
         : section === "insights"
-          ? "Highlights from analyzed statements."
+          ? "Compare statements and category charts from the same Workspace tools agents use."
           : section === "api-keys"
             ? "Mint keys for MCP and agents. The secret is shown once; only a hash is stored."
             : "Copy Cursor MCP config with the API URL, then paste a minted key — never baked into the web build.";
@@ -1040,52 +1209,415 @@ export default function HomePage() {
           )}
 
           {section === "insights" && (
-            <section className="insights-grid">
-              {insightSummaries.length === 0 && (
-                <div className="panel">
-                  <div className="panel-body">
+            <section className="insights-layout">
+              <div className="panel">
+                <div className="panel-head">
+                  <h3>Compare statements</h3>
+                  <span className="panel-meta">POST /v1/statements/compare</span>
+                </div>
+                <div className="panel-body">
+                  {readyStatements.length < 2 ? (
                     <div className="empty-state">
-                      No analyzed statements yet. Upload a PDF or CSV and wait for analysis to finish.
+                      Need at least two ready statements in this Workspace to compare.
                     </div>
+                  ) : (
+                    <>
+                      <div className="compare-pickers">
+                        <label className="field">
+                          <span>Statement A</span>
+                          <select
+                            value={compareA}
+                            onChange={(e) => {
+                              setCompareA(e.target.value);
+                              setCompareResult(null);
+                            }}
+                          >
+                            <option value="">Select…</option>
+                            {readyStatements.map((s) => (
+                              <option key={s.statementId} value={s.statementId}>
+                                {statementLabel(s)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="field">
+                          <span>Statement B</span>
+                          <select
+                            value={compareB}
+                            onChange={(e) => {
+                              setCompareB(e.target.value);
+                              setCompareResult(null);
+                            }}
+                          >
+                            <option value="">Select…</option>
+                            {readyStatements.map((s) => (
+                              <option key={`b-${s.statementId}`} value={s.statementId}>
+                                {statementLabel(s)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={busy || !compareA || !compareB}
+                          onClick={() => void onCompareStatements()}
+                        >
+                          {busy ? "Comparing…" : "Compare"}
+                        </button>
+                      </div>
+                      {compareError && (
+                        <div className="error-banner">
+                          <strong>{compareError}</strong>
+                        </div>
+                      )}
+                      {compareResult && (
+                        <div className="compare-results">
+                          <div className="compare-sides">
+                            <div className="compare-side">
+                              <h4>{statementLabel(compareResult.a)}</h4>
+                              <div className="summary-grid">
+                                <div className="metric">
+                                  <span>Income</span>
+                                  <strong>
+                                    {formatMoney(
+                                      compareResult.a.totalIncome,
+                                      compareResult.a.currency,
+                                    )}
+                                  </strong>
+                                </div>
+                                <div className="metric">
+                                  <span>Expenses</span>
+                                  <strong>
+                                    {formatMoney(
+                                      compareResult.a.totalExpenses,
+                                      compareResult.a.currency,
+                                    )}
+                                  </strong>
+                                </div>
+                                <div className="metric">
+                                  <span>Net</span>
+                                  <strong>
+                                    {formatMoney(
+                                      compareResult.a.netBalance,
+                                      compareResult.a.currency,
+                                    )}
+                                  </strong>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="compare-side">
+                              <h4>{statementLabel(compareResult.b)}</h4>
+                              <div className="summary-grid">
+                                <div className="metric">
+                                  <span>Income</span>
+                                  <strong>
+                                    {formatMoney(
+                                      compareResult.b.totalIncome,
+                                      compareResult.b.currency,
+                                    )}
+                                  </strong>
+                                </div>
+                                <div className="metric">
+                                  <span>Expenses</span>
+                                  <strong>
+                                    {formatMoney(
+                                      compareResult.b.totalExpenses,
+                                      compareResult.b.currency,
+                                    )}
+                                  </strong>
+                                </div>
+                                <div className="metric">
+                                  <span>Net</span>
+                                  <strong>
+                                    {formatMoney(
+                                      compareResult.b.netBalance,
+                                      compareResult.b.currency,
+                                    )}
+                                  </strong>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          <h4 className="subsection-title spaced">Deltas (B − A)</h4>
+                          <div className="summary-grid">
+                            <div className="metric">
+                              <span>Income</span>
+                              <strong
+                                className={
+                                  compareResult.deltas.totalIncome >= 0
+                                    ? "delta-pos"
+                                    : "delta-neg"
+                                }
+                              >
+                                {formatDelta(
+                                  compareResult.deltas.totalIncome,
+                                  compareResult.b.currency,
+                                )}
+                              </strong>
+                            </div>
+                            <div className="metric">
+                              <span>Expenses</span>
+                              <strong
+                                className={
+                                  compareResult.deltas.totalExpenses >= 0
+                                    ? "delta-pos"
+                                    : "delta-neg"
+                                }
+                              >
+                                {formatDelta(
+                                  compareResult.deltas.totalExpenses,
+                                  compareResult.b.currency,
+                                )}
+                              </strong>
+                            </div>
+                            <div className="metric">
+                              <span>Net</span>
+                              <strong
+                                className={
+                                  compareResult.deltas.netBalance >= 0 ? "delta-pos" : "delta-neg"
+                                }
+                              >
+                                {formatDelta(
+                                  compareResult.deltas.netBalance,
+                                  compareResult.b.currency,
+                                )}
+                              </strong>
+                            </div>
+                          </div>
+                          {compareResult.deltas.categories.length > 0 && (
+                            <>
+                              <h4 className="subsection-title spaced">Category deltas</h4>
+                              <div className="table-wrap">
+                                <table>
+                                  <thead>
+                                    <tr>
+                                      <th>Category</th>
+                                      <th>A</th>
+                                      <th>B</th>
+                                      <th>Δ</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {compareResult.deltas.categories.map((c) => (
+                                      <tr key={c.category}>
+                                        <td>{c.category}</td>
+                                        <td>
+                                          {formatMoney(c.amountA, compareResult.a.currency)}
+                                        </td>
+                                        <td>
+                                          {formatMoney(c.amountB, compareResult.b.currency)}
+                                        </td>
+                                        <td
+                                          className={
+                                            c.delta >= 0 ? "delta-pos" : "delta-neg"
+                                          }
+                                        >
+                                          {formatDelta(c.delta, compareResult.b.currency)}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="panel">
+                <div className="panel-head">
+                  <h3>Category breakdown</h3>
+                  <span className="panel-meta">GET /v1/statements/{"{id}"}/categories</span>
+                </div>
+                <div className="panel-body">
+                  {readyStatements.length === 0 ? (
+                    <div className="empty-state">
+                      No ready statements yet. Upload a PDF or CSV and wait for analysis.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="compare-pickers">
+                        <label className="field">
+                          <span>Statement</span>
+                          <select
+                            value={categoryStatementId}
+                            onChange={(e) => {
+                              setCategoryStatementId(e.target.value);
+                              setCategoryBreakdown(null);
+                            }}
+                          >
+                            <option value="">Select…</option>
+                            {readyStatements.map((s) => (
+                              <option key={`cat-${s.statementId}`} value={s.statementId}>
+                                {statementLabel(s)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={busy || !categoryStatementId}
+                          onClick={() => void onLoadCategories(categoryStatementId)}
+                        >
+                          {busy ? "Loading…" : "Load chart"}
+                        </button>
+                      </div>
+                      {categoryError && (
+                        <div className="error-banner">
+                          <strong>{categoryError}</strong>
+                        </div>
+                      )}
+                      {categoryBreakdown && (
+                        <>
+                          <p className="overview-meta">
+                            {statementLabel(categoryBreakdown)}
+                            {categoryBreakdown.currency
+                              ? ` · ${categoryBreakdown.currency}`
+                              : ""}
+                            {" · "}
+                            source: {categoryBreakdown.source}
+                            {" · "}
+                            total{" "}
+                            {formatMoney(
+                              categoryBreakdown.totalCategorized,
+                              categoryBreakdown.currency,
+                            )}
+                          </p>
+                          {categoryBreakdown.categories.length === 0 ? (
+                            <div className="empty-state">No categories for this statement.</div>
+                          ) : (
+                            <div className="category-bars chart">
+                              {categoryBreakdown.categories.map((c) => (
+                                <div className="category-row" key={c.category}>
+                                  <span>
+                                    {c.category}
+                                    {c.share !== undefined
+                                      ? ` (${Math.round(c.share * 100)}%)`
+                                      : ""}
+                                  </span>
+                                  <span>
+                                    {formatMoney(c.amount, categoryBreakdown.currency)}
+                                  </span>
+                                  <div className="bar-track">
+                                    <div
+                                      className="bar-fill"
+                                      style={{
+                                        width:
+                                          categoryMaxAmount > 0
+                                            ? `${Math.round(
+                                                (c.amount / categoryMaxAmount) * 100,
+                                              )}%`
+                                            : "0%",
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {failedInsights.length > 0 && (
+                <div className="panel">
+                  <div className="panel-head">
+                    <h3>Failed analyses</h3>
+                    <span className="panel-meta">{failedInsights.length} need attention</span>
+                  </div>
+                  <div className="panel-body failed-insights-list">
+                    {failedInsights.map((row) => (
+                      <div className="failed-insight-row" key={row.statementId}>
+                        <div className="failed-insight-meta">
+                          <strong>{statementLabel(row)}</strong>
+                          <span className={`status-pill status-${row.status}`}>{row.status}</span>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-ghost"
+                            onClick={() => {
+                              setSection("statements");
+                              void openStatement(row.statementId);
+                            }}
+                          >
+                            Open
+                          </button>
+                        </div>
+                        {row.error ? (
+                          <AnalysisErrorBanner error={row.error} />
+                        ) : (
+                          <div className="error-banner">
+                            <strong>Analysis failed.</strong>
+                            <p className="error-next">
+                              <span className="error-next-label">Next step:</span> Upload the
+                              statement again (PDF or CSV).
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
-              {insightSummaries.map((summary) => (
-                <div className="panel insight-card" key={summary.statementId}>
-                  <div className="panel-head">
-                    <h3>{summary.month ?? summary.statementId.slice(0, 8)}</h3>
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-ghost"
-                      onClick={() => {
-                        setSection("dashboard");
-                        void openStatement(summary.statementId);
-                      }}
-                    >
-                      Open
-                    </button>
-                  </div>
-                  <div className="panel-body">
-                    <div className="summary-grid">
-                      <div className="metric">
-                        <span>Net</span>
-                        <strong>{formatMoney(summary.netBalance, summary.currency)}</strong>
-                      </div>
-                      <div className="metric">
-                        <span>Expenses</span>
-                        <strong>{formatMoney(summary.totalExpenses, summary.currency)}</strong>
+
+              <div className="insights-grid">
+                {insightSummaries.length === 0 && failedInsights.length === 0 && (
+                  <div className="panel">
+                    <div className="panel-body">
+                      <div className="empty-state">
+                        No analyzed statements yet. Upload a PDF or CSV and wait for analysis to
+                        finish.
                       </div>
                     </div>
-                    {summary.spendingInsights && summary.spendingInsights.length > 0 && (
-                      <ul className="insights-list compact">
-                        {summary.spendingInsights.slice(0, 2).map((i) => (
-                          <li key={i}>{i}</li>
-                        ))}
-                      </ul>
-                    )}
                   </div>
-                </div>
-              ))}
+                )}
+                {insightSummaries.map((summary) => (
+                  <div className="panel insight-card" key={summary.statementId}>
+                    <div className="panel-head">
+                      <h3>{summary.month ?? summary.statementId.slice(0, 8)}</h3>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost"
+                        onClick={() => {
+                          setSection("dashboard");
+                          void openStatement(summary.statementId);
+                        }}
+                      >
+                        Open
+                      </button>
+                    </div>
+                    <div className="panel-body">
+                      <div className="summary-grid">
+                        <div className="metric">
+                          <span>Net</span>
+                          <strong>{formatMoney(summary.netBalance, summary.currency)}</strong>
+                        </div>
+                        <div className="metric">
+                          <span>Expenses</span>
+                          <strong>
+                            {formatMoney(summary.totalExpenses, summary.currency)}
+                          </strong>
+                        </div>
+                      </div>
+                      {summary.spendingInsights && summary.spendingInsights.length > 0 && (
+                        <ul className="insights-list compact">
+                          {summary.spendingInsights.slice(0, 2).map((i) => (
+                            <li key={i}>{i}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </section>
           )}
 

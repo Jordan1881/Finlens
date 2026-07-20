@@ -29,9 +29,15 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const text = await res.text();
   if (!res.ok) {
     try {
-      const body = JSON.parse(text) as { error?: { message?: string } };
+      const body = JSON.parse(text) as {
+        error?: { message?: string; nextStep?: string; code?: string };
+      };
       if (body.error?.message) {
-        throw new Error(body.error.message);
+        const parts = [body.error.message];
+        if (body.error.nextStep) {
+          parts.push(body.error.nextStep);
+        }
+        throw new Error(parts.join(" — "));
       }
     } catch (error) {
       if (error instanceof Error && error.message !== text) {

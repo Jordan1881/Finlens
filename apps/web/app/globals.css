@@ -737,6 +737,12 @@ tbody tr.row-selected {
   gap: 1rem;
 }
 
+.insights-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
 .insights-list.compact {
   margin-top: 0.75rem;
 }
@@ -745,12 +751,113 @@ tbody tr.row-selected {
   margin-bottom: 0;
 }
 
+.compare-pickers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: flex-end;
+  margin-bottom: 1rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 180px;
+  flex: 1;
+}
+
+.field span {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.field select {
+  appearance: none;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: #fff
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238c8c8c' d='M6 8L1 3h10z'/%3E%3C/svg%3E")
+    no-repeat right 0.65rem center;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.field select:focus {
+  outline: 2px solid var(--primary-soft);
+  border-color: var(--primary);
+}
+
+.compare-sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.compare-side h4 {
+  margin: 0 0 0.65rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.delta-pos {
+  color: #389e0d;
+}
+
+.delta-neg {
+  color: #cf1322;
+}
+
+.category-bars.chart .bar-track {
+  height: 10px;
+}
+
+.error-code {
+  margin: 0.35rem 0 0;
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  opacity: 0.85;
+}
+
+.error-next-label {
+  font-weight: 600;
+}
+
+.failed-insights-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.failed-insight-row .error-banner {
+  margin-bottom: 0;
+}
+
+.failed-insight-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.failed-insight-meta strong {
+  font-size: 0.88rem;
+}
+
 @media (max-width: 1100px) {
   .stats-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .compare-sides {
     grid-template-columns: 1fr;
   }
 }
