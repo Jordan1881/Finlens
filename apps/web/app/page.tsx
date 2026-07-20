@@ -6,9 +6,11 @@ import { api, apiConfigured, getApiUrl, getMcpUrl } from "../lib/api";
 import {
   beginLogin,
   beginLogout,
+  completeLoginFromCallback,
   isAuthenticated,
   isCognitoConfigured,
 } from "../lib/auth";
+import { BrandMark } from "../components/BrandMark";
 
 const fadeUp = {
   initial: { opacity: 0, y: 14 },
@@ -432,6 +434,24 @@ export default function HomePage() {
   }, [load, selectedId]);
 
   useEffect(() => {
+    const url = new URL(window.location.href);
+    // CloudFront may serve index.html for /auth/callback (no .html key), so the
+    // home page must complete PKCE when Cognito returns ?code=&state=.
+    const hasOAuthCallback = Boolean(url.searchParams.get("code") && url.searchParams.get("state"));
+    if (hasOAuthCallback) {
+      void completeLoginFromCallback(url)
+        .then(() => {
+          window.history.replaceState({}, "", "/");
+          setAuthed(true);
+          setAuthReady(true);
+        })
+        .catch((e) => {
+          setError(e instanceof Error ? e.message : String(e));
+          setAuthReady(true);
+        });
+      return;
+    }
+
     setAuthed(isAuthenticated());
     setAuthReady(true);
   }, []);
@@ -919,9 +939,7 @@ export default function HomePage() {
         <div className="auth-orb auth-orb-a" aria-hidden />
         <div className="auth-orb auth-orb-b" aria-hidden />
         <motion.div className="auth-card" {...fadeUp}>
-          <div className="brand-mark auth-brand" aria-hidden>
-            <span className="brand-mark-inner">F</span>
-          </div>
+          <BrandMark variant="auth" />
           <p className="auth-eyebrow">Finlens</p>
           <h1>Opening your workspace</h1>
           <p className="auth-lede">Loading secure session…</p>
@@ -942,9 +960,7 @@ export default function HomePage() {
           animate={{ opacity: 1, y: 0, scale: 1 }}
           transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
         >
-          <div className="brand-mark auth-brand" aria-hidden>
-            <span className="brand-mark-inner">F</span>
-          </div>
+          <BrandMark variant="auth" />
           <p className="auth-eyebrow">Statement intelligence</p>
           <h1>Finlens</h1>
           <p className="auth-lede">
@@ -985,9 +1001,7 @@ export default function HomePage() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark" aria-hidden>
-            <span className="brand-mark-inner">F</span>
-          </div>
+          <BrandMark variant="app" />
           <div>
             <h1>Finlens</h1>
             <p>Workspace control plane</p>
@@ -1083,9 +1097,7 @@ export default function HomePage() {
             >
               Sign out
             </button>
-            <div className="avatar" aria-hidden>
-              FL
-            </div>
+            <BrandMark variant="avatar" className="avatar" />
           </div>
         </header>
 

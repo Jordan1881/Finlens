@@ -531,11 +531,36 @@ export class FinlensStack extends cdk.Stack {
       autoDeleteObjects: stage !== "prod",
     });
 
+    // Next.js static export emits /auth/callback.html; Cognito redirects to /auth/callback.
+    // Rewrite extensionless paths so S3 serves the .html object instead of falling through
+    // to the SPA index.html error page (which skipped the OAuth callback handler).
+    const webSpaRewrite = new cloudfront.Function(this, "WebSpaRewriteFn", {
+      code: cloudfront.FunctionCode.fromInline(`
+function handler(event) {
+  var request = event.request;
+  var uri = request.uri;
+  if (uri.endsWith('/')) {
+    request.uri = uri + 'index.html';
+  } else if (uri !== '' && uri.indexOf('.') === -1) {
+    request.uri = uri + '.html';
+  }
+  return request;
+}
+`),
+      comment: "Map extensionless Next static routes to .html objects",
+    });
+
     const webDistribution = new cloudfront.Distribution(this, "WebDistribution", {
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessControl(webBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
+        functionAssociations: [
+          {
+            function: webSpaRewrite,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          },
+        ],
       },
       defaultRootObject: "index.html",
       errorResponses: [
