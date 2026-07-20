@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { api, apiConfigured, getApiUrl, getMcpUrl } from "../lib/api";
 import {
   beginLogin,
@@ -8,6 +9,16 @@ import {
   isAuthenticated,
   isCognitoConfigured,
 } from "../lib/auth";
+
+const fadeUp = {
+  initial: { opacity: 0, y: 14 },
+  animate: { opacity: 1, y: 0 },
+  transition: { duration: 0.45, ease: [0.22, 1, 0.36, 1] as const },
+};
+
+const stagger = {
+  animate: { transition: { staggerChildren: 0.06 } },
+};
 
 const POLL_MS = 15_000;
 const LIST_PAGE_SIZE = 20;
@@ -905,11 +916,17 @@ export default function HomePage() {
   if (!authReady) {
     return (
       <main className="auth-screen">
-        <div className="auth-card">
-          <div className="brand-mark auth-brand">F</div>
-          <h1>Finlens</h1>
-          <p>Loading…</p>
-        </div>
+        <div className="auth-orb auth-orb-a" aria-hidden />
+        <div className="auth-orb auth-orb-b" aria-hidden />
+        <motion.div className="auth-card" {...fadeUp}>
+          <div className="brand-mark auth-brand" aria-hidden>
+            <span className="brand-mark-inner">F</span>
+          </div>
+          <p className="auth-eyebrow">Finlens</p>
+          <h1>Opening your workspace</h1>
+          <p className="auth-lede">Loading secure session…</p>
+          <div className="auth-loader" aria-hidden />
+        </motion.div>
       </main>
     );
   }
@@ -917,10 +934,23 @@ export default function HomePage() {
   if (!authed) {
     return (
       <main className="auth-screen">
-        <div className="auth-card">
-          <div className="brand-mark auth-brand">F</div>
+        <div className="auth-orb auth-orb-a" aria-hidden />
+        <div className="auth-orb auth-orb-b" aria-hidden />
+        <motion.div
+          className="auth-card"
+          initial={{ opacity: 0, y: 18, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
+        >
+          <div className="brand-mark auth-brand" aria-hidden>
+            <span className="brand-mark-inner">F</span>
+          </div>
+          <p className="auth-eyebrow">Statement intelligence</p>
           <h1>Finlens</h1>
-          <p>Sign in with Cognito to open your personal Workspace.</p>
+          <p className="auth-lede">
+            Sign in to your Workspace — upload statements, mint agent keys, and read the same
+            Analysis your MCP tools see.
+          </p>
           {!isCognitoConfigured() && (
             <div className="error-banner">
               Cognito is not configured. Set NEXT_PUBLIC_COGNITO_USER_POOL_ID,
@@ -932,7 +962,7 @@ export default function HomePage() {
           )}
           <button
             type="button"
-            className="btn"
+            className="btn btn-auth"
             disabled={loginBusy || !isCognitoConfigured()}
             onClick={() => {
               setLoginBusy(true);
@@ -942,10 +972,11 @@ export default function HomePage() {
               });
             }}
           >
-            {loginBusy ? "Redirecting…" : "Sign in"}
+            {loginBusy ? "Redirecting…" : "Continue with Cognito"}
           </button>
           {error && <div className="error-banner">{error}</div>}
-        </div>
+          <p className="auth-footnote">PDF &amp; CSV · Hebrew &amp; English · Agent-first</p>
+        </motion.div>
       </main>
     );
   }
@@ -954,15 +985,17 @@ export default function HomePage() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">F</div>
+          <div className="brand-mark" aria-hidden>
+            <span className="brand-mark-inner">F</span>
+          </div>
           <div>
             <h1>Finlens</h1>
-            <p>Finance dashboard</p>
+            <p>Workspace control plane</p>
           </div>
         </div>
 
         <div>
-          <div className="nav-section-label">Main</div>
+          <div className="nav-section-label">Navigate</div>
           <nav className="nav">
             <button
               type="button"
@@ -1008,8 +1041,8 @@ export default function HomePage() {
         </div>
 
         <div className="sidebar-promo">
-          <strong>PDF & CSV supported</strong>
-          <p>Upload bank exports in Hebrew or English for AI-powered summaries.</p>
+          <strong>Built for agents</strong>
+          <p>Mint a key, paste into Cursor, and keep humans on the same Workspace truth.</p>
         </div>
       </aside>
 
@@ -1057,19 +1090,29 @@ export default function HomePage() {
         </header>
 
         <main className="main">
-          <div className="page-title-block">
-            <h2>{sectionTitle}</h2>
-            <p>{sectionSubtitle}</p>
-          </div>
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={section}
+              className="page-title-block"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <p className="page-eyebrow">Workspace</p>
+              <h2>{sectionTitle}</h2>
+              <p>{sectionSubtitle}</p>
+            </motion.div>
+          </AnimatePresence>
 
           {error && <div className="error-banner">{error}</div>}
           {copiedHint && <div className="info-banner">{copiedHint}</div>}
           {initialLoading && <div className="info-banner processing">Loading statements…</div>}
 
           {section === "dashboard" && (
-            <>
+            <motion.div variants={stagger} initial="initial" animate="animate">
               <section className="stats-grid">
-                <div className="stat-card">
+                <motion.div className="stat-card" variants={fadeUp}>
                   <div className="stat-icon blue">
                     <IconStatements />
                   </div>
@@ -1078,8 +1121,8 @@ export default function HomePage() {
                     <div className="stat-value">{stats.total}</div>
                     <div className="stat-meta">All uploads</div>
                   </div>
-                </div>
-                <div className="stat-card">
+                </motion.div>
+                <motion.div className="stat-card" variants={fadeUp}>
                   <div className="stat-icon green">
                     <IconDashboard />
                   </div>
@@ -1088,8 +1131,8 @@ export default function HomePage() {
                     <div className="stat-value">{stats.ready}</div>
                     <div className="stat-meta">Analysis complete</div>
                   </div>
-                </div>
-                <div className="stat-card">
+                </motion.div>
+                <motion.div className="stat-card" variants={fadeUp}>
                   <div className="stat-icon orange">
                     <IconUpload />
                   </div>
@@ -1098,8 +1141,8 @@ export default function HomePage() {
                     <div className="stat-value">{stats.processing}</div>
                     <div className="stat-meta">Processing pipeline</div>
                   </div>
-                </div>
-                <div className="stat-card">
+                </motion.div>
+                <motion.div className="stat-card" variants={fadeUp}>
                   <div className="stat-icon purple">
                     <IconInsights />
                   </div>
@@ -1108,7 +1151,7 @@ export default function HomePage() {
                     <div className="stat-value">{stats.failed}</div>
                     <div className="stat-meta">Needs re-upload</div>
                   </div>
-                </div>
+                </motion.div>
               </section>
 
               <section className="dashboard-grid">
@@ -1159,7 +1202,7 @@ export default function HomePage() {
                   </div>
                 </div>
               </section>
-            </>
+            </motion.div>
           )}
 
           {section === "statements" && (
