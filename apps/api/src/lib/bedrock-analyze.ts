@@ -10,22 +10,10 @@ import {
   parseAnalysisJson,
   type AnalysisResult,
 } from "./analysis-prompt";
-import { MAX_CSV_TEXT_CHARS } from "./file-validation";
-import type { StatementFileType } from "./file-validation";
+import { modelIdFor } from "./bedrock-model";
+import { MAX_CSV_TEXT_CHARS, type StatementFileType } from "./file-validation";
 
 const bedrock = new BedrockRuntimeClient({});
-
-function modelIdFor(fileType: StatementFileType): string {
-  const baseModelId = process.env.BEDROCK_MODEL_ID;
-  if (!baseModelId) {
-    throw new Error("BEDROCK_MODEL_ID is not configured");
-  }
-  // CSVs are plain-text extraction; a smaller model handles them at a fraction of the cost
-  if (fileType === "csv" && process.env.BEDROCK_MODEL_ID_CSV) {
-    return process.env.BEDROCK_MODEL_ID_CSV;
-  }
-  return baseModelId;
-}
 
 async function converse(content: ContentBlock[], modelId: string): Promise<AnalysisResult> {
   const response = await bedrock.send(

@@ -2,7 +2,7 @@
 
 Statements live in DynamoDB keyed `(tenantId, statementId)`, where `tenantId` is the Workspace id. DynamoDB over Postgres because every access pattern is a key lookup ("Statements for Workspace", "one Statement") and the serverless stack avoids connection pooling; pay-per-request fits scale-to-zero. Workspace isolation is enforced by the partition key itself, not by application-level filtering after a cross-tenant query.
 
-API keys are stored separately as SHA-256 hashes in `ApiKeysTable` (`keyHash` → `tenantId`); plaintext keys are never persisted.
+API keys are stored separately as SHA-256 hashes in `ApiKeysTable` (`keyHash` → `tenantId`); plaintext keys are never persisted. The shared dev shortcut (`DEV_API_KEY`) is compared with a timing-safe equality check.
 
 ## Status
 
