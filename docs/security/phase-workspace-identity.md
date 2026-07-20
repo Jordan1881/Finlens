@@ -21,6 +21,7 @@ Create path is an atomic `TransactWrite` (membership + meta) with `attribute_not
 - Multi-member invites — add `WORKSPACE#<id>` / `MEMBER#<sub>` rows without changing Statement keys
 
 API key mint/revoke for Workspace owners is `#21` — see `docs/security/phase-api-keys.md`.
+Control plane UI (Statements, keys, MCP setup) is `#27` — see `docs/security/phase-control-plane-ui.md`.
 
 ## Threat model notes (this phase)
 

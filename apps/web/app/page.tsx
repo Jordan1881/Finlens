@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, apiConfigured } from "../lib/api";
+import { api, apiConfigured, getApiUrl, getMcpUrl } from "../lib/api";
 import {
   beginLogin,
   beginLogout,
@@ -10,8 +10,10 @@ import {
 } from "../lib/auth";
 
 const POLL_MS = 15_000;
+const LIST_PAGE_SIZE = 20;
+const MCP_KEY_PLACEHOLDER = "<paste-minted-api-key>";
 
-type Section = "dashboard" | "statements" | "insights" | "api-keys";
+type Section = "dashboard" | "statements" | "insights" | "api-keys" | "mcp-setup";
 
 type StatementRow = {
   statementId: string;
@@ -108,6 +110,34 @@ function IconKeys() {
         fill="currentColor"
       />
     </svg>
+  );
+}
+
+function IconMcp() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M4 7h6v2H4V7Zm10 0h6v2h-6V7ZM4 15h6v2H4v-2Zm10 0h6v2h-6v-2ZM9 9v6h2V9H9Zm4 0v6h2V9h-2Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+function buildMcpConfigJson(mcpUrl: string, apiKey: string): string {
+  return JSON.stringify(
+    {
+      mcpServers: {
+        finlens: {
+          url: mcpUrl,
+          headers: {
+            "X-Api-Key": apiKey,
+          },
+        },
+      },
+    },
+    null,
+    2,
   );
 }
 
@@ -258,6 +288,7 @@ export default function HomePage() {
   const [insightSummaries, setInsightSummaries] = useState<StatementDetail[]>([]);
   const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([]);
   const [mintedSecret, setMintedSecret] = useState<MintApiKeyResult | null>(null);
+  const [listNextToken, setListNextToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [dragging, setDragging] = useState(false);
@@ -266,11 +297,27 @@ export default function HomePage() {
   const [authed, setAuthed] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const [loginBusy, setLoginBusy] = useState(false);
+  const [copiedHint, setCopiedHint] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(async () => {
-    const data = await api<{ statements: StatementRow[] }>("/v1/statements");
-    setStatements(data.statements ?? []);
+  const mcpUrl = useMemo(() => getMcpUrl(), []);
+  const apiBaseUrl = useMemo(() => getApiUrl(), []);
+  const mcpConfigTemplate = useMemo(
+    () => (mcpUrl ? buildMcpConfigJson(mcpUrl, MCP_KEY_PLACEHOLDER) : ""),
+    [mcpUrl],
+  );
+
+  const load = useCallback(async (opts?: { append?: boolean; token?: string }) => {
+    const qs = new URLSearchParams({ limit: String(LIST_PAGE_SIZE) });
+    if (opts?.token) {
+      qs.set("nextToken", opts.token);
+    }
+    const data = await api<{ statements: StatementRow[]; nextToken?: string }>(
+      `/v1/statements?${qs.toString()}`,
+    );
+    const rows = data.statements ?? [];
+    setStatements((prev) => (opts?.append ? [...prev, ...rows] : rows));
+    setListNextToken(data.nextToken ?? null);
   }, []);
 
   const loadApiKeys = useCallback(async () => {
@@ -508,11 +555,28 @@ export default function HomePage() {
     }
   }
 
-  async function copySecret(value: string) {
+  async function copyText(value: string, hint = "Copied") {
     try {
       await navigator.clipboard.writeText(value);
+      setCopiedHint(hint);
+      window.setTimeout(() => setCopiedHint(null), 2000);
     } catch {
-      setError("Could not copy to clipboard — select the key and copy manually.");
+      setError("Could not copy to clipboard — select the text and copy manually.");
+    }
+  }
+
+  async function onLoadMore() {
+    if (!listNextToken || busy) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await load({ append: true, token: listNextToken });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -561,75 +625,89 @@ export default function HomePage() {
 
   function renderStatementsTable(compact = false) {
     return (
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Statement</th>
-              <th>Format</th>
-              <th>Status</th>
-              <th>Period</th>
-              {!compact && <th>Uploaded</th>}
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.length === 0 && (
+      <>
+        <div className="table-wrap">
+          <table>
+            <thead>
               <tr>
-                <td colSpan={compact ? 5 : 6}>
-                  <div className="empty-state">{emptyTableMessage}</div>
-                </td>
+                <th>Statement</th>
+                <th>Format</th>
+                <th>Status</th>
+                <th>Period</th>
+                {!compact && <th>Uploaded</th>}
+                <th />
               </tr>
-            )}
-            {filtered.map((s) => (
-              <tr
-                key={s.statementId}
-                className={[
-                  selectedId === s.statementId ? "row-selected" : "",
-                  "row-clickable",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-                onClick={() => void openStatement(s.statementId)}
-              >
-                <td>{s.statementId.slice(0, 8)}…</td>
-                <td>
-                  <span className="type-pill">{s.sourceFormat ?? "pdf"}</span>
-                </td>
-                <td>
-                  <span className={`status-pill status-${s.status}`}>{s.status}</span>
-                </td>
-                <td>{s.month ?? "—"}</td>
-                {!compact && <td>{new Date(s.createdAt).toLocaleDateString()}</td>}
-                <td className="row-actions">
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-ghost"
-                    disabled={busy}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void openStatement(s.statementId);
-                    }}
-                  >
-                    View
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-danger"
-                    disabled={busy}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void onDeleteStatement(s.statementId);
-                    }}
-                  >
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={compact ? 5 : 6}>
+                    <div className="empty-state">{emptyTableMessage}</div>
+                  </td>
+                </tr>
+              )}
+              {filtered.map((s) => (
+                <tr
+                  key={s.statementId}
+                  className={[
+                    selectedId === s.statementId ? "row-selected" : "",
+                    "row-clickable",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  onClick={() => void openStatement(s.statementId)}
+                >
+                  <td>{s.statementId.slice(0, 8)}…</td>
+                  <td>
+                    <span className="type-pill">{s.sourceFormat ?? "pdf"}</span>
+                  </td>
+                  <td>
+                    <span className={`status-pill status-${s.status}`}>{s.status}</span>
+                  </td>
+                  <td>{s.month ?? "—"}</td>
+                  {!compact && <td>{new Date(s.createdAt).toLocaleDateString()}</td>}
+                  <td className="row-actions">
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost"
+                      disabled={busy}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void openStatement(s.statementId);
+                      }}
+                    >
+                      View
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-danger"
+                      disabled={busy}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void onDeleteStatement(s.statementId);
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {listNextToken && (
+          <div className="load-more-row">
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              disabled={busy}
+              onClick={() => void onLoadMore()}
+            >
+              {busy ? "Loading…" : "Load more"}
+            </button>
+          </div>
+        )}
+      </>
     );
   }
 
@@ -640,7 +718,9 @@ export default function HomePage() {
         ? "Statements"
         : section === "insights"
           ? "Insights"
-          : "API keys";
+          : section === "api-keys"
+            ? "API keys"
+            : "MCP setup";
 
   const sectionSubtitle =
     section === "dashboard"
@@ -649,7 +729,9 @@ export default function HomePage() {
         ? "Browse uploads, open summaries, and track processing status."
         : section === "insights"
           ? "Highlights from analyzed statements."
-          : "Mint keys for MCP and agents. The secret is shown once; only a hash is stored.";
+          : section === "api-keys"
+            ? "Mint keys for MCP and agents. The secret is shown once; only a hash is stored."
+            : "Copy Cursor MCP config with the API URL, then paste a minted key — never baked into the web build.";
 
   if (!authReady) {
     return (
@@ -745,6 +827,14 @@ export default function HomePage() {
               <IconKeys />
               API keys
             </button>
+            <button
+              type="button"
+              className={`nav-item${section === "mcp-setup" ? " active" : ""}`}
+              onClick={() => setSection("mcp-setup")}
+            >
+              <IconMcp />
+              MCP setup
+            </button>
           </nav>
         </div>
 
@@ -804,6 +894,7 @@ export default function HomePage() {
           </div>
 
           {error && <div className="error-banner">{error}</div>}
+          {copiedHint && <div className="info-banner">{copiedHint}</div>}
           {initialLoading && <div className="info-banner processing">Loading statements…</div>}
 
           {section === "dashboard" && (
@@ -1025,9 +1116,16 @@ export default function HomePage() {
                         <button
                           type="button"
                           className="btn btn-sm"
-                          onClick={() => void copySecret(mintedSecret.apiKey)}
+                          onClick={() => void copyText(mintedSecret.apiKey, "API key copied")}
                         >
                           Copy
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-ghost"
+                          onClick={() => setSection("mcp-setup")}
+                        >
+                          MCP setup
                         </button>
                         <button
                           type="button"
@@ -1096,6 +1194,106 @@ export default function HomePage() {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {section === "mcp-setup" && (
+            <section className="mcp-setup-layout">
+              <div className="panel">
+                <div className="panel-head">
+                  <h3>Endpoint</h3>
+                </div>
+                <div className="panel-body">
+                  <p className="api-keys-help">
+                    Remote MCP URL from <code>NEXT_PUBLIC_FINLENS_API_URL</code>. The web bundle
+                    never includes an API key — mint one under API keys and paste it into Cursor.
+                  </p>
+                  {!mcpUrl && (
+                    <div className="error-banner">
+                      Set NEXT_PUBLIC_FINLENS_API_URL before building the static export.
+                    </div>
+                  )}
+                  {mcpUrl && (
+                    <div className="mcp-endpoint-row">
+                      <code className="secret-value">{mcpUrl}</code>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() => void copyText(mcpUrl, "MCP URL copied")}
+                      >
+                        Copy URL
+                      </button>
+                    </div>
+                  )}
+                  {apiBaseUrl && (
+                    <p className="mcp-meta">
+                      REST base: <code>{apiBaseUrl}</code>
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="panel">
+                <div className="panel-head">
+                  <h3>Cursor MCP config</h3>
+                  <div className="panel-head-actions">
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={!mcpConfigTemplate}
+                      onClick={() =>
+                        void copyText(mcpConfigTemplate, "Config copied — paste your API key")
+                      }
+                    >
+                      Copy config
+                    </button>
+                  </div>
+                </div>
+                <div className="panel-body">
+                  <ol className="mcp-steps">
+                    <li>
+                      Open{" "}
+                      <button
+                        type="button"
+                        className="link-btn"
+                        onClick={() => setSection("api-keys")}
+                      >
+                        API keys
+                      </button>{" "}
+                      and mint a Workspace key (copy the secret once).
+                    </li>
+                    <li>
+                      Paste the JSON below into Cursor MCP settings, then replace{" "}
+                      <code>{MCP_KEY_PLACEHOLDER}</code> with the minted key.
+                    </li>
+                    <li>Agents then share the same Workspace Statements as this dashboard.</li>
+                  </ol>
+                  {mcpConfigTemplate && (
+                    <pre className="mcp-config-block">{mcpConfigTemplate}</pre>
+                  )}
+                  {mintedSecret && mcpUrl && (
+                    <div className="secret-reveal">
+                      <strong>One-time: copy config with this session’s minted key</strong>
+                      <p className="api-keys-help">
+                        Only available while the mint reveal is open. Closing dismisses the secret
+                        from the page; it is never stored in the build.
+                      </p>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() =>
+                          void copyText(
+                            buildMcpConfigJson(mcpUrl, mintedSecret.apiKey),
+                            "Config with key copied",
+                          )
+                        }
+                      >
+                        Copy config with key
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             </section>

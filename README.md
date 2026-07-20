@@ -10,7 +10,7 @@ Finlens is a remote MCP product for bank statement analysis on AWS. Upload a mon
 | REST / MCP API | https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com |
 | MCP endpoint | https://xaq0zzwnv7.execute-api.eu-west-1.amazonaws.com/mcp |
 
-Auth uses header `X-Api-Key` for MCP/agents, or `Authorization: Bearer` (Cognito access token) for the web control plane. API keys are stored as SHA-256 hashes in the ApiKeysTable, mapped to a Workspace `tenantId`. Workspace owners mint/revoke keys in the web UI (**API keys**) or via `POST`/`GET`/`DELETE /v1/api-keys` with Cognito Bearer — plaintext is shown once at mint. Operators can still use `node scripts/create-api-key.mjs --table <ApiKeysTableName> --tenant <tenantId>`. In dev, the shared `finlens-dev-local-key` shortcut (stack output `DevApiKey`, tenant `dev`) also works for API/MCP. The web SPA never embeds an API key; it uses Cognito Hosted UI + PKCE.
+Auth uses header `X-Api-Key` for MCP/agents, or `Authorization: Bearer` (Cognito access token) for the web control plane. API keys are stored as SHA-256 hashes in the ApiKeysTable, mapped to a Workspace `tenantId`. Workspace owners mint/revoke keys in the web UI (**API keys**) or via `POST`/`GET`/`DELETE /v1/api-keys` with Cognito Bearer — plaintext is shown once at mint. The **MCP setup** panel copies a Cursor config template with the API URL and a key placeholder (paste the minted secret; never bake a key into the web build). Operators can still use `node scripts/create-api-key.mjs --table <ApiKeysTableName> --tenant <tenantId>`. In dev, the shared `finlens-dev-local-key` shortcut (stack output `DevApiKey`, tenant `dev`) also works for API/MCP. The web SPA never embeds an API key; it uses Cognito Hosted UI + PKCE.
 
 ## Features
 
