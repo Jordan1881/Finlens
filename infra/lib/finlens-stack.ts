@@ -87,12 +87,14 @@ export class FinlensStack extends cdk.Stack {
     });
 
     // Single-table Workspace + membership (USER#sub / MEMBERSHIP, WORKSPACE#id / META).
+    // TTL on expiresAt cleans daily quota counter rows (QUOTA#uploads|asks#YYYY-MM-DD); META/membership omit it.
     const workspacesTable = new dynamodb.Table(this, "WorkspacesTable", {
       partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: stage === "prod" },
+      timeToLiveAttribute: "expiresAt",
     });
 
     const statementsTable = new dynamodb.Table(this, "StatementsTable", {
@@ -395,6 +397,8 @@ export class FinlensStack extends cdk.Stack {
 
     statementsTable.grantReadWriteData(onS3UploadFn);
     stateMachine.grantStartExecution(onS3UploadFn);
+    // Concurrent Analysis quota reads Statements (+ optional Workspace META limits).
+    workspacesTable.grantReadData(onS3UploadFn);
 
     const opsAlertsTopic = new sns.Topic(this, "OpsAlertsTopic", {
       displayName: `finlens-${stage}-ops-alerts`,

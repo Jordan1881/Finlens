@@ -20,9 +20,8 @@ Cross-tenant and missing resources are indistinguishable at the API: both return
 
 ### Out of scope (later phases)
 
-- Quotas / rate limits
-- Workspace identity redesign
 - Power-tool / elevated agent capabilities
+- Ask tool (#26) — ask daily quota helpers exist in `quota-service.ts` (`consumeAskQuota`)
 
 ## Verification
 

@@ -1,5 +1,6 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
-import { badRequest, json, structuredError, unauthorized } from "../lib/http";
+import { badRequest, json, structuredError, tooManyRequests, unauthorized } from "../lib/http";
+import { isQuotaError } from "../lib/quota-service";
 import { uploadStatement } from "../lib/statement-service";
 import { resolveTenantId } from "../lib/auth";
 
@@ -57,6 +58,9 @@ export async function handler(
 
   const result = await uploadStatement(tenantId, fileBytes, filename);
   if ("code" in result) {
+    if (isQuotaError(result)) {
+      return tooManyRequests(result.code, result.message, result.nextStep, result.retryable);
+    }
     return structuredError(400, result.code, result.message, result.retryable, result.nextStep);
   }
 

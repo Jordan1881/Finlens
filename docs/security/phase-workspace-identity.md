@@ -17,9 +17,10 @@ Create path is an atomic `TransactWrite` (membership + meta) with `attribute_not
 
 **Hooks (not implemented here):**
 
-- `#21` API key mint UI — mint keys with `tenantId = workspaceId` into existing `ApiKeysTable`
-- `#23` quotas — optional fields on `META` / enforcement middleware
+- `#23` quotas — see `docs/security/phase-quotas.md` (daily counters + concurrent `processing`)
 - Multi-member invites — add `WORKSPACE#<id>` / `MEMBER#<sub>` rows without changing Statement keys
+
+API key mint/revoke for Workspace owners is `#21` — see `docs/security/phase-api-keys.md`.
 
 ## Threat model notes (this phase)
 
@@ -59,7 +60,6 @@ Manual web login (after deploy + Cognito callback URLs):
 
 ## Out of scope
 
-- Key mint / revoke UI (`#21`)
 - Quotas (`#23`)
 - Refresh-token silent renew (re-login when access token expires)
 - Prod CORS lock already present; browser still needs valid Cognito token

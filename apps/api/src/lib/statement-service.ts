@@ -38,6 +38,10 @@ import {
   parseTransactionExtractJson,
   statementExpiresAt,
 } from "./transaction-extract.ts";
+import {
+  enforceUploadQuotas,
+  type QuotaSeamDeps,
+} from "./quota-service.ts";
 
 const LIST_LIMIT = 20;
 
@@ -51,6 +55,11 @@ export interface StatementSeamDeps {
   s3: CommandClient;
   tableName: string;
   bucketName: string;
+  /**
+   * When set, direct upload enforces per-Workspace quotas (#23).
+   * Omitted in pure lifecycle unit tests; production resolves from env.
+   */
+  quota?: QuotaSeamDeps;
 }
 
 function envTableName(): string {
@@ -73,11 +82,22 @@ const defaultDdb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const defaultS3 = new S3Client({});
 
 function defaultDeps(): StatementSeamDeps {
+  const tableName = envTableName();
+  const workspacesTable = process.env.WORKSPACES_TABLE;
   return {
     ddb: defaultDdb,
     s3: defaultS3,
-    tableName: envTableName(),
+    tableName,
     bucketName: envBucketName(),
+    ...(workspacesTable
+      ? {
+          quota: {
+            ddb: defaultDdb,
+            workspacesTableName: workspacesTable,
+            statementsTableName: tableName,
+          },
+        }
+      : {}),
   };
 }
 
@@ -226,6 +246,13 @@ export async function uploadStatementWith(
       retryable: false,
       nextStep: validationError.nextStep,
     };
+  }
+
+  if (deps.quota) {
+    const quotaError = await enforceUploadQuotas(tenantId, deps.quota);
+    if (quotaError) {
+      return quotaError;
+    }
   }
 
   const { statementId, s3Key } = await createStatementAndUploadFile(deps, {

@@ -59,8 +59,9 @@ function isConditionalFailure(error: unknown): boolean {
  * - USER#<sub> / MEMBERSHIP → membership row
  * - WORKSPACE#<id> / META → workspace record
  *
- * Future (#21 key mint, multi-member): WORKSPACE#<id> / MEMBER#<sub>
- * Future (#23 quotas): optional fields on META (not enforced here).
+ * Future (multi-member): WORKSPACE#<id> / MEMBER#<sub>
+ * Quotas (#23): daily counters at WORKSPACE#<id> / QUOTA#uploads|asks#YYYY-MM-DD
+ * API key mint/revoke: api-key-service + docs/security/phase-api-keys.md
  */
 export async function resolveOrCreatePersonalWorkspace(
   cognitoSub: string,

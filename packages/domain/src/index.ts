@@ -12,8 +12,8 @@ export interface WorkspaceRecord {
   ownerSub: string;
   createdAt: string;
   /**
-   * Reserved for #23 quotas (uploads/day, asks/day, concurrent analyses).
-   * Not enforced in the workspace-identity phase.
+   * Optional per-Workspace limit overrides (#23).
+   * Keys: uploadsPerDay, asksPerDay, concurrentAnalyses.
    */
   quotas?: Record<string, number>;
 }

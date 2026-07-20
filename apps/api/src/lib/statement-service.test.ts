@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { StatementRecord } from "@finlens/domain";
-import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DeleteCommand,
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { buildPendingStatement, sourceFormatForContentType } from "./statement-record.ts";
 import {
@@ -10,6 +16,7 @@ import {
   getStatementWith,
   listStatementsWith,
   putPendingStatement,
+  uploadStatementWith,
   type CommandClient,
   type StatementSeamDeps,
 } from "./statement-service.ts";
@@ -20,6 +27,7 @@ import {
   toSummaryView,
 } from "./statement-views.ts";
 import { serializeTransactionExtract } from "./transaction-extract.ts";
+import { quotaCounterKeys, type QuotaSeamDeps } from "./quota-service.ts";
 
 const NOW = "2026-07-20T12:00:00.000Z";
 
@@ -412,5 +420,155 @@ describe("Statement seam lifecycle operations", () => {
     assert.ok(full && "transactionExtract" in full);
     assert.deepEqual(full.transactionExtract, extract);
     assert.equal(full.transactionExtractS3Key, undefined);
+  });
+});
+
+function createQuotaAwareUploadDeps(options: {
+  uploadLimit?: number;
+  concurrentLimit?: number;
+  processingCount?: number;
+}): {
+  deps: StatementSeamDeps;
+  quotaStore: Map<string, Record<string, unknown>>;
+} {
+  const { deps, store: statementStore } = createMemoryDeps();
+  const quotaStore = new Map<string, Record<string, unknown>>();
+
+  for (let i = 0; i < (options.processingCount ?? 0); i += 1) {
+    const record = baseRecord({
+      tenantId: "tenant-a",
+      statementId: `proc-${i}`,
+      status: "processing",
+    });
+    statementStore.set(`${record.tenantId}#${record.statementId}`, record);
+  }
+
+  const quotaDdb: CommandClient = {
+    async send(command: unknown) {
+      if (command instanceof GetCommand) {
+        const key = command.input.Key as { pk: string; sk: string };
+        return { Item: quotaStore.get(`${key.pk}#${key.sk}`) };
+      }
+      if (command instanceof QueryCommand) {
+        const values = command.input.ExpressionAttributeValues as {
+          ":tenantId": string;
+          ":processing"?: string;
+        };
+        let count = 0;
+        for (const item of statementStore.values()) {
+          if (item.tenantId !== values[":tenantId"]) {
+            continue;
+          }
+          if (values[":processing"] === "processing" && item.status !== "processing") {
+            continue;
+          }
+          count += 1;
+        }
+        return { Count: count };
+      }
+      if (command instanceof UpdateCommand) {
+        const key = command.input.Key as { pk: string; sk: string };
+        const mapKey = `${key.pk}#${key.sk}`;
+        const existing = quotaStore.get(mapKey) ?? { ...key };
+        const values = (command.input.ExpressionAttributeValues ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const condition = command.input.ConditionExpression as string | undefined;
+        const currentCount =
+          typeof existing.count === "number" ? (existing.count as number) : undefined;
+        if (condition?.includes("attribute_not_exists(#count) OR #count < :limit")) {
+          const limit = values[":limit"] as number;
+          if (currentCount !== undefined && currentCount >= limit) {
+            const err = new Error("Conditional check failed");
+            err.name = "ConditionalCheckFailedException";
+            throw err;
+          }
+        }
+        quotaStore.set(mapKey, {
+          ...existing,
+          pk: key.pk,
+          sk: key.sk,
+          count: (currentCount ?? 0) + 1,
+          expiresAt: values[":expiresAt"],
+        });
+        return {};
+      }
+      // Statement DDB path (Put/Get/…)
+      return deps.ddb.send(command);
+    },
+  };
+
+  // Route statement + quota through one client: statement commands hit statement store.
+  const combinedDdb: CommandClient = {
+    async send(command: unknown) {
+      if (
+        command instanceof UpdateCommand ||
+        (command instanceof GetCommand &&
+          typeof (command.input.Key as { pk?: string })?.pk === "string") ||
+        (command instanceof QueryCommand &&
+          Boolean(
+            (command.input.ExpressionAttributeValues as { ":processing"?: string })?.[
+              ":processing"
+            ],
+          ))
+      ) {
+        return quotaDdb.send(command);
+      }
+      return deps.ddb.send(command);
+    },
+  };
+
+  const quota: QuotaSeamDeps = {
+    ddb: combinedDdb,
+    workspacesTableName: "Workspaces",
+    statementsTableName: "Statements",
+    limits: {
+      uploadsPerDay: options.uploadLimit ?? 20,
+      concurrentAnalyses: options.concurrentLimit ?? 2,
+    },
+    now: () => new Date("2026-07-21T12:00:00.000Z"),
+  };
+
+  return {
+    deps: {
+      ...deps,
+      ddb: combinedDdb,
+      quota,
+    },
+    quotaStore,
+  };
+}
+
+describe("Statement seam quota denials", () => {
+  const minimalPdf = new TextEncoder().encode("%PDF-1.4\n%âãÏÓ\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n");
+
+  it("uploadStatementWith returns QUOTA_UPLOADS_EXCEEDED when daily limit hit", async () => {
+    const { deps, quotaStore } = createQuotaAwareUploadDeps({ uploadLimit: 1 });
+
+    const first = await uploadStatementWith(deps, "tenant-a", minimalPdf, "a.pdf");
+    assert.equal("code" in first, false);
+
+    const second = await uploadStatementWith(deps, "tenant-a", minimalPdf, "b.pdf");
+    assert.ok("code" in second);
+    assert.equal(second.code, "QUOTA_UPLOADS_EXCEEDED");
+    assert.equal(second.retryable, true);
+    assert.ok(second.nextStep.length > 0);
+
+    const keys = quotaCounterKeys("tenant-a", "uploads", "2026-07-21");
+    assert.equal(quotaStore.get(`${keys.pk}#${keys.sk}`)?.count, 1);
+  });
+
+  it("uploadStatementWith returns QUOTA_CONCURRENT_ANALYSES_EXCEEDED when at capacity", async () => {
+    const { deps } = createQuotaAwareUploadDeps({
+      concurrentLimit: 2,
+      processingCount: 2,
+      uploadLimit: 20,
+    });
+
+    const result = await uploadStatementWith(deps, "tenant-a", minimalPdf, "a.pdf");
+    assert.ok("code" in result);
+    assert.equal(result.code, "QUOTA_CONCURRENT_ANALYSES_EXCEEDED");
+    assert.equal(result.retryable, true);
   });
 });

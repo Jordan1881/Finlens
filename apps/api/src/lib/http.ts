@@ -44,3 +44,13 @@ export function unauthorized(message = "Unauthorized"): APIGatewayProxyResultV2 
 export function notFound(message: string): APIGatewayProxyResultV2 {
   return structuredError(404, "NOT_FOUND", message, false, "Check the statementId or upload a new statement");
 }
+
+/** Agent-readable over-quota denial (issue #23). */
+export function tooManyRequests(
+  code: string,
+  message: string,
+  nextStep: string,
+  retryable = true,
+): APIGatewayProxyResultV2 {
+  return structuredError(429, code, message, retryable, nextStep);
+}

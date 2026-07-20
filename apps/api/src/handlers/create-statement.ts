@@ -2,8 +2,9 @@ import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 import type { CreateStatementResponse } from "@finlens/domain";
-import { badRequest, json, unauthorized } from "../lib/http";
+import { badRequest, json, tooManyRequests, unauthorized } from "../lib/http";
 import { resolveTenantId } from "../lib/auth";
+import { enforceUploadQuotas } from "../lib/quota-service";
 import { buildPendingStatement, sourceFormatForContentType } from "../lib/statement-record";
 import {
   putPendingStatement,
@@ -59,6 +60,24 @@ export async function handler(
     deps = resolveStatementSeamDeps();
   } catch {
     return json(500, { error: "Server misconfigured" });
+  }
+
+  try {
+    const quotaError = await enforceUploadQuotas(tenantId);
+    if (quotaError) {
+      return tooManyRequests(
+        quotaError.code,
+        quotaError.message,
+        quotaError.nextStep,
+        quotaError.retryable,
+      );
+    }
+  } catch (error) {
+    // Missing WORKSPACES_TABLE in misconfigured envs — surface as 500, not a silent bypass.
+    if (error instanceof Error && error.message.includes("WORKSPACES_TABLE")) {
+      return json(500, { error: "Server misconfigured" });
+    }
+    throw error;
   }
 
   const { statementId, s3Key, record } = buildPendingStatement({

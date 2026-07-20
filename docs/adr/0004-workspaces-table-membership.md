@@ -16,5 +16,5 @@ accepted
 ## Consequences
 
 - Extending to multi-member Workspaces adds `WORKSPACE#<id>` / `MEMBER#<sub>` items without migrating Statement rows.
-- Quotas (#23) and key-mint (#21) attach to `workspaceId` / META; they do not require a new partition scheme.
+- Quotas (#23) attach daily counter items under `WORKSPACE#<id>` / `QUOTA#…` plus optional `META.quotas` overrides; see `docs/security/phase-quotas.md`.
 - Existing API keys that already store a `tenantId` continue to work; minting new keys should use Workspace ids.
