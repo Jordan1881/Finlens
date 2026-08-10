@@ -286,3 +286,5 @@ Stack outputs include `ApiUrl`, `WebUrl`, `McpUrl`, `StatementsBucketName`, `Sta
 ## License
 
 Private / all rights reserved unless otherwise noted in the repository.
+
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/Jordan1881/Finlens?utm_source=oss&utm_medium=github&utm_campaign=Jordan1881%2FFinlens&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
